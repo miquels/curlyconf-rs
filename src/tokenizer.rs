@@ -36,23 +36,23 @@ impl TokenType {
             Word => "word",
             UnterminatedString => "[unterminated string]",
             Unknown => "[unknown]",
-            Ident => "identifier",  // alias for Word
-            Expr => "expression",   // alias for Word
+            Ident => "identifier", // alias for Word
+            Expr => "expression",  // alias for Word
         }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct TokenPos {
-    pub line:   u32,
-    pub column:    u32,
+    pub line: u32,
+    pub column: u32,
     pub offset: usize,
 }
 
 impl TokenPos {
     pub(crate) fn new() -> TokenPos {
         TokenPos {
-            line:   1,
+            line: 1,
             column: 1,
             offset: 0,
         }
@@ -60,7 +60,7 @@ impl TokenPos {
 
     pub(crate) fn none() -> TokenPos {
         TokenPos {
-            line:   0,
+            line: 0,
             column: 0,
             offset: 0,
         }
@@ -69,39 +69,35 @@ impl TokenPos {
 
 #[derive(Debug)]
 pub struct Tokenizer {
-    file:   String,
-    data:   String,
-    buf:    VecDeque<Token>,
-    pub(crate) pos:    TokenPos,
+    file: String,
+    data: String,
+    buf: VecDeque<Token>,
+    pub(crate) pos: TokenPos,
     pub(crate) nl_token: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct Token {
-    pub ttype:  TokenType,
-    pub pos:    TokenPos,
-    pub value:  String,
+    pub ttype: TokenType,
+    pub pos: TokenPos,
+    pub value: String,
 }
 
 impl Token {
     pub fn new(ttype: TokenType, value: impl Into<String>, pos: TokenPos) -> Token {
         let value = value.into();
-        Token {
-            ttype,
-            value,
-            pos,
-        }
+        Token { ttype, value, pos }
     }
 }
 
 impl Tokenizer {
     pub fn from_string(s: impl Into<String>) -> Tokenizer {
         Tokenizer {
-            file:   "[data]".to_string(),
-            data:   s.into(),
-            pos:    TokenPos::new(),
-            nl_token: true,
-            buf:    VecDeque::new(),
+            file: "[data]".to_string(),
+            data: s.into(),
+            pos: TokenPos::new(),
+            nl_token: false,
+            buf: VecDeque::new(),
         }
     }
 
@@ -111,11 +107,11 @@ impl Tokenizer {
         let text = String::from_utf8(data).map_err(|_| IoError::new(Kind::Other, "utf-8 error"))?;
 
         Ok(Tokenizer {
-            file:   name,
-            data:   text,
-            pos:    TokenPos::new(),
-            nl_token: true,
-            buf:    VecDeque::new(),
+            file: name,
+            data: text,
+            pos: TokenPos::new(),
+            nl_token: false,
+            buf: VecDeque::new(),
         })
     }
 
@@ -167,11 +163,23 @@ impl Tokenizer {
         let s = &self.data[offset + 1..];
         if let Some(x) = s.find('\'') {
             self.update_pos(x + 2);
-            (TokenType::Word, Range{ start: offset + 1, end: offset + 1 + x})
+            (
+                TokenType::Word,
+                Range {
+                    start: offset + 1,
+                    end: offset + 1 + x,
+                },
+            )
         } else {
             let x = s.len() + 1;
             self.update_pos(x);
-            (TokenType::UnterminatedString, Range{ start: offset + 1, end: offset + x })
+            (
+                TokenType::UnterminatedString,
+                Range {
+                    start: offset + 1,
+                    end: offset + x,
+                },
+            )
         }
     }
 
@@ -198,12 +206,24 @@ impl Tokenizer {
         }
 
         if end {
-            self.update_pos(n + 2);
-            (TokenType::Word, Range{ start: offset + 1, end: offset + 1 + n})
+            self.update_pos(n + 1);
+            (
+                TokenType::Word,
+                Range {
+                    start: offset + 1,
+                    end: offset + n,
+                },
+            )
         } else {
             let x = s.len() + 1;
             self.update_pos(x);
-            (TokenType::UnterminatedString, Range{ start: offset + 1, end: offset + x })
+            (
+                TokenType::UnterminatedString,
+                Range {
+                    start: offset + 1,
+                    end: offset + x,
+                },
+            )
         }
     }
 
@@ -215,10 +235,11 @@ impl Tokenizer {
         let s = &self.data[offset..];
         for c in s.chars() {
             match c {
-                '@'|'$'|'%'|'^'|'&'|'*'|'-'|'_'|'+'|'['|']'|':'|'|'|'~'|'.'|'?'|'/' => {},
-                '0' ..= '9' => {},
-                'a' ..= 'z' => {},
-                'A' ..= 'Z' => {},
+                '@' | '$' | '%' | '^' | '&' | '*' | '-' | '_' | '+' | '[' | ']' | ':' | '|'
+                | '~' | '.' | '?' | '/' => {}
+                '0'..='9' => {}
+                'a'..='z' => {}
+                'A'..='Z' => {}
                 _ => break,
             }
             i += 1;
@@ -226,17 +247,35 @@ impl Tokenizer {
         }
         if i == 0 {
             self.update_pos(1);
-            (TokenType::Unknown, Range { start: offset, end: offset + 1 })
+            (
+                TokenType::Unknown,
+                Range {
+                    start: offset,
+                    end: offset + 1,
+                },
+            )
         } else {
             self.update_pos(n);
-            (TokenType::Word, Range { start: offset, end: offset + n })
+            (
+                TokenType::Word,
+                Range {
+                    start: offset,
+                    end: offset + n,
+                },
+            )
         }
     }
 
     pub fn parse_token(&mut self, t: TokenType) -> (TokenType, Range) {
         let offset = self.pos.offset;
         self.update_pos(1);
-        (t, Range { start: offset, end: offset + 1 })
+        (
+            t,
+            Range {
+                start: offset,
+                end: offset + 1,
+            },
+        )
     }
 
     pub fn push_token(&mut self, token: Token) {
@@ -260,16 +299,16 @@ impl Tokenizer {
         let mut chars = s.chars();
         let (t, range) = match chars.next().unwrap() {
             '\n' => self.parse_token(TokenType::Nl),
-            '{'  => self.parse_token(TokenType::LcBrace),
-            '}'  => self.parse_token(TokenType::RcBrace),
-            '('  => self.parse_token(TokenType::LBrace),
-            ')'  => self.parse_token(TokenType::RBrace),
-            ','  => self.parse_token(TokenType::Comma),
-            ';'  => self.parse_token(TokenType::Semi),
-            '='  => self.parse_token(TokenType::Equal),
-            '"'  => self.parse_dqstring(),
+            '{' => self.parse_token(TokenType::LcBrace),
+            '}' => self.parse_token(TokenType::RcBrace),
+            '(' => self.parse_token(TokenType::LBrace),
+            ')' => self.parse_token(TokenType::RBrace),
+            ',' => self.parse_token(TokenType::Comma),
+            ';' => self.parse_token(TokenType::Semi),
+            '=' => self.parse_token(TokenType::Equal),
+            '"' => self.parse_dqstring(),
             '\'' => self.parse_sqstring(),
-            _    => self.parse_word(),
+            _ => self.parse_word(),
         };
 
         if peek {

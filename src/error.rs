@@ -1,14 +1,14 @@
-use std::fmt;
 use serde::{de, ser};
+use std::fmt;
 
 use crate::tokenizer::TokenPos;
 
-pub type Result<T, E=Error> = std::result::Result<T, E>;
+pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Clone, Debug)]
 pub struct Error {
-    pub(crate) pos:    TokenPos,
-    pub(crate) msg:    String,
+    pub(crate) pos: TokenPos,
+    pub(crate) msg: String,
 }
 
 impl Error {
@@ -43,4 +43,3 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
-

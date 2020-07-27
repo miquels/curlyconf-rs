@@ -1,9 +1,7 @@
 use std::str::FromStr;
 
+use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::Deserialize;
-use serde::de::{
-    self, DeserializeSeed, MapAccess, SeqAccess, Visitor,
-};
 
 use crate::error::{Error, Result};
 use crate::parser::{self, Parser};
@@ -11,7 +9,9 @@ use crate::tokenizer::{Token, TokenType, Tokenizer};
 
 pub struct Deserializer {
     parser: Parser,
-    eov:    TokenType,
+    eov: TokenType,
+    initial: bool,
+    cur_label: Option<String>,
 }
 
 impl Deserializer {
@@ -20,14 +20,16 @@ impl Deserializer {
         let parser = Parser::new(t);
         Deserializer {
             parser,
-            eov: TokenType::Comma,
+            eov: TokenType::Semi,
+            initial: true,
+            cur_label: None,
         }
     }
 }
 
 pub fn from_str<T>(s: &str) -> Result<T>
 where
-    T: for <'de> Deserialize<'de>,
+    T: for<'de> Deserialize<'de>,
 {
     let mut deserializer = Deserializer::from_str(s);
     let t = T::deserialize(&mut deserializer)?;
@@ -36,7 +38,10 @@ where
 }
 
 impl Deserializer {
-    fn parse_expr<T>(&mut self, name: &str) -> Result<T> where T: FromStr {
+    fn parse_expr<T>(&mut self, name: &str) -> Result<T>
+    where
+        T: FromStr,
+    {
         let word = self.parser.expect(TokenType::Word)?;
         let value: T = FromStr::from_str(&word.value)
             .map_err(|_| Error::new(format!("expected {} value", name), &word.pos))?;
@@ -190,11 +195,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     }
 
     // Unit struct means a named value containing no data.
-    fn deserialize_unit_struct<V>(
-        self,
-        _name: &'static str,
-        _visitor: V,
-    ) -> Result<V::Value>
+    fn deserialize_unit_struct<V>(self, _name: &'static str, _visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
@@ -202,11 +203,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     }
 
     // newtype struct. use defaults.
-    fn deserialize_newtype_struct<V>(
-        self,
-        _name: &'static str,
-        visitor: V,
-    ) -> Result<V::Value>
+    fn deserialize_newtype_struct<V>(self, _name: &'static str, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
@@ -220,17 +217,17 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     where
         V: Visitor<'de>,
     {
-            // Give the visitor access to each element of the sequence.
-            let value = visitor.visit_seq(Separated::new(&mut self, TokenType::Comma))?;
+        // Give the visitor access to each element of the sequence.
+        let value = visitor.visit_seq(ListAccess::new(&mut self, TokenType::Comma))?;
 
-            // Must end with ';' or '\n'.
-            // XXX FIXME not for:
-            // - sequences of sections
-            // - map values that are sequences (since we already check they end with ';')
-            // - are there any left?
-            // self.parser.expect(self.eov)?;
+        // Must end with ';' or '\n'.
+        // XXX FIXME not for:
+        // - sequences of sections
+        // - map values that are sequences (since we already check they end with ';')
+        // - are there any left?
+        // self.parser.expect(self.eov)?;
 
-            Ok(value)
+        Ok(value)
     }
 
     // Tuples look just like sequences.
@@ -261,6 +258,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     where
         V: Visitor<'de>,
     {
+        log::debug!("deserialize_map");
+
         // if it starts with a name, remember it.
         let name = match self.parser.peek()? {
             Some(token) if token.ttype == TokenType::Word => Some(token),
@@ -272,14 +271,16 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
 
         // push "__name__ value;" if the section has a name.
         if let Some(name) = name {
-            self.parser.push_token(Token::new(TokenType::Word, "__name__", self.parser.t.pos));
+            self.parser
+                .push_token(Token::new(TokenType::Word, "__name__", self.parser.t.pos));
             self.parser.push_token(name);
-            self.parser.push_token(Token::new(self.eov, ";", self.parser.t.pos));
+            self.parser
+                .push_token(Token::new(self.eov, ";", self.parser.t.pos));
         }
 
         // Give the visitor access to each entry of the map.
         let eov = self.eov;
-        let value = visitor.visit_map(Separated::new(&mut self, eov))?;
+        let value = visitor.visit_map(FieldAccess::new(&mut self, eov, None))?;
 
         // Parse the closing brace of the map.
         self.parser.expect(TokenType::RcBrace)?;
@@ -299,40 +300,54 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     where
         V: Visitor<'de>,
     {
-        // see if it starts with a name.
-        let name = match self.parser.peek()? {
-            Some(token) if token.ttype == TokenType::Word => {
-                // yes. so "fields" must contain "__name__".
-                if !fields.contains(&"__name__") {
-                    return Err(Error::new(format!("expected '{{'"), &self.parser.t.pos));
-                }
-                Some(token)
-            },
-            _ => {
-                // no, so if there's a "__name__" field return an error.
-                if fields.contains(&"__name__") {
-                    return Err(Error::new(format!("expected section name"), &self.parser.t.pos));
-                }
-                None
-            },
-        };
+        log::debug!("deserialize_struct({})", _name);
 
-        // then an opening brace.
-        self.parser.expect(TokenType::LcBrace)?;
+        let initial = self.initial;
+        if !self.initial {
+            // see if it starts with a name.
+            let name = match self.parser.peek()? {
+                Some(token) if token.ttype == TokenType::Word => {
+                    // yes. so "fields" must contain "__name__".
+                    if !fields.contains(&"__name__") {
+                        return Err(Error::new(format!("expected '{{'"), &self.parser.t.pos));
+                    }
+                    Some(self.parser.expect(TokenType::Word)?)
+                }
+                _ => {
+                    // no, so if there's a "__name__" field return an error.
+                    if fields.contains(&"__name__") {
+                        return Err(Error::new(
+                            format!("expected section name"),
+                            &self.parser.t.pos,
+                        ));
+                    }
+                    None
+                }
+            };
 
-        // push "__name__ value;" if the section has a name.
-        if let Some(name) = name {
-            self.parser.push_token(Token::new(TokenType::Word, "__name__", self.parser.t.pos));
-            self.parser.push_token(name);
-            self.parser.push_token(Token::new(self.eov, ";", self.parser.t.pos));
+            // then an opening brace.
+            self.parser.expect(TokenType::LcBrace)?;
+
+            // push "__name__ value;" if the section has a name.
+            if let Some(name) = name {
+                self.parser
+                    .push_token(Token::new(TokenType::Word, "__name__", self.parser.t.pos));
+                self.parser.push_token(name);
+                self.parser
+                    .push_token(Token::new(self.eov, ";", self.parser.t.pos));
+            }
         }
+        self.initial = false;
 
         // Give the visitor access to each entry of the map.
         let eov = self.eov;
-        let value = visitor.visit_map(Separated::new(&mut self, eov))?;
+        let value = visitor.visit_map(FieldAccess::new(&mut self, eov, Some(fields)))?;
 
-        // Parse the closing brace of the map.
-        self.parser.expect(TokenType::RcBrace)?;
+        log::debug!("XX initial is {:?}", initial);
+        if !initial {
+            // Parse the closing brace of the map.
+            self.parser.expect(TokenType::RcBrace)?;
+        }
 
         Ok(value)
     }
@@ -364,20 +379,27 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         V: Visitor<'de>,
     {
         let word = self.parser.expect(TokenType::Word)?;
-        Err(Error::new("BUG: serde called deserialize_ignored_any", &word.pos))
+        Err(Error::new(
+            "BUG: serde called deserialize_ignored_any",
+            &word.pos,
+        ))
     }
 }
 
-// This handles a separated list.
-struct Separated<'a> {
+// This handles a comma-separated list.
+struct ListAccess<'a> {
     de: &'a mut Deserializer,
     sep: TokenType,
     first: bool,
 }
 
-impl<'a> Separated<'a> {
-    fn new(de: &'a mut Deserializer, separator: TokenType) -> Self {
-        Separated {
+impl<'a> ListAccess<'a> {
+    fn new(
+        de: &'a mut Deserializer,
+        separator: TokenType,
+    ) -> Self {
+        log::debug!("ListAccess::new({:?})", separator);
+        ListAccess {
             de,
             sep: separator,
             first: true,
@@ -387,19 +409,47 @@ impl<'a> Separated<'a> {
 
 // `SeqAccess` iterates through elements of the sequence.
 // It checks that every element is preceded by the separator, except the first one.
-impl<'de, 'a> SeqAccess<'de> for Separated<'a> {
+impl<'de, 'a> SeqAccess<'de> for ListAccess<'a> {
     type Error = Error;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
     where
         T: DeserializeSeed<'de>,
     {
+        log::debug!("ListAccess::SeqAccess::next_element_seed");
+
         if !self.first {
-            // After the first element there must be a separator. If not, simply return.
+
+            // XXX dup, use lookahead + peek like th rust parser.
+            if let Some(token) = self.de.parser.peek()? {
+                if token.ttype == self.de.eov {
+                    return Ok(None);
+                }
+            }
+
             self.de.parser.start_try();
-            if self.de.parser.try_expect(self.sep)?.is_none() {
+
+            // return when we see end-of-value (';' or '\n')
+            if self.de.parser.try_expect(self.de.eov)?.is_some() {
                 return Ok(None);
             }
+
+            // now there must be either a separator......
+            self.de.parser.try_expect(self.sep)?;
+
+            // ... OR a matching label.
+            if let Some(ref label) = self.de.cur_label {
+                log::debug!("ListAccess::next_element_seed: cur_label is {}", label);
+                if let Some(token) = self.de.parser.try_expect(TokenType::Ident)? {
+                    if &token.value == label {
+                        log::debug!("ListAccess::SeqAccess: skipping label {}", label);
+                    } else {
+                        // XXX FIXME what error if token.value != label? "expected label" ?
+                        return Err(Error::new(format!("expected `{}'", label), &token.pos));
+                    }
+                }
+            }
+
             self.de.parser.end_try()?;
         }
         self.first = false;
@@ -409,28 +459,84 @@ impl<'de, 'a> SeqAccess<'de> for Separated<'a> {
     }
 }
 
+// This handles the ';' or '\n' separated key/value fields of a section.
+struct FieldAccess<'a> {
+    de: &'a mut Deserializer,
+    sep: TokenType,
+    first: bool,
+    fields: Option<&'static [&'static str]>,
+    orig_label: Option<String>,
+}
+
+impl<'a> FieldAccess<'a> {
+    fn new(
+        de: &'a mut Deserializer,
+        separator: TokenType,
+        fields: Option<&'static [&'static str]>,
+    ) -> Self {
+        log::debug!("FieldAccess::new({:?})", separator);
+        let orig_label = de.cur_label.take();
+        FieldAccess {
+            de,
+            sep: separator,
+            first: true,
+            fields,
+            orig_label,
+        }
+    }
+}
+
+impl<'a> Drop for FieldAccess<'a> {
+    fn drop(&mut self) {
+        log::debug!("reset cur_label to {:?}", self.orig_label);
+        self.de.cur_label = self.orig_label.take();
+    }
+}
+
 // `MapAccess` iterates through elements of the sequence.
 // It checks that every key/value is followed by a separator.
-impl<'de, 'a> MapAccess<'de> for Separated<'a> {
+impl<'de, 'a> MapAccess<'de> for FieldAccess<'a> {
     type Error = Error;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>>
     where
         K: DeserializeSeed<'de>,
     {
-        // Separator is required after every entry.
+        log::debug!("FieldAccess::MapAccess::next_key_seed");
+
+        // Separator is required between key/value entries (';' or '\n')
         if !self.first {
             self.de.parser.expect(self.sep)?;
         }
         self.first = false;
 
-        // If it's not an ident we're at the end of the section.
+        // Expect an ident.
         match self.de.parser.peek() {
             Ok(Some(mut token)) => {
                 if !parser::is_ident(&mut token) {
+                    log::debug!(
+                        "FieldAccess::MapAccess::next_key_seed: {:?} not an ident",
+                        token
+                    );
                     return Ok(None);
                 }
-            },
+                // yes, we have an identifier. must be one of the fields.
+                if !self
+                    .fields
+                    .as_ref()
+                    .unwrap()
+                    .contains(&(token.value.as_str()))
+                {
+                    // advance parser, then generate error.
+                    let ident = self.de.parser.expect(TokenType::Ident)?;
+                    return Err(Error::new(
+                        format!("unknown key: `{}'", ident.value),
+                        &ident.pos,
+                    ));
+                }
+                log::debug!("set cur_label to {}", token.value);
+                self.de.cur_label = Some(token.value);
+            }
             _ => return Ok(None),
         }
 
@@ -442,30 +548,50 @@ impl<'de, 'a> MapAccess<'de> for Separated<'a> {
     where
         V: DeserializeSeed<'de>,
     {
+        log::debug!("FieldAccess::MapAccess::next_value_seed {}", std::any::type_name::<V::Value>());
+
         // Deserialize a map value.
         seed.deserialize(&mut *self.de)
     }
 }
 
-#[test]
-fn test_struct() {
-    #[derive(Deserialize, PartialEq, Debug)]
-    #[serde(rename = "test")]
-    struct Test {
-        __name__: String,
-        int: u32,
-        seq: Vec<String>,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    fn init() {
+        let _ = env_logger::builder().is_test(true).try_init();
     }
 
-    let j = r#"test foo {
-        int 1;
-        seq a, "b";
-    }"#;
-    let expected = Test {
-        __name__: "foo".to_owned(),
-        int: 1,
-        seq: vec!["a".to_owned(), "b".to_owned()],
-    };
-    assert_eq!(expected, from_str(j).unwrap());
-}
+    #[test]
+    fn test_struct() {
+        init();
 
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct Main {
+            test: Test,
+        }
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        #[serde(rename = "test")]
+        struct Test {
+            __name__: String,
+            int: u32,
+            seq: Vec<String>,
+        }
+
+        let j = r#"test foo {
+            int 1;
+            seq a,"b";
+        };"#;
+        let expected = Main {
+            test: Test {
+                __name__: "foo".to_owned(),
+                int: 1,
+                seq: vec!["a".to_owned(), "b".to_owned()],
+            },
+        };
+        assert_eq!(expected, from_str(j).unwrap());
+    }
+}

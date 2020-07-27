@@ -3,8 +3,9 @@ mod error;
 mod parser;
 mod tokenizer;
 
-pub use tokenizer::*;
+pub use de::from_str;
 pub use error::Error;
+pub use tokenizer::*;
 
 #[cfg(test)]
 mod tests {
