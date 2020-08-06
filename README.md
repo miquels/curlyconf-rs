@@ -39,7 +39,7 @@ struct Person {
     #[serde(default)]
     fullname: Option<String>,
     #[serde(default)]
-    address: Option<IpAddr>,
+    address: Option<std::net::IpAddr>,
 }
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
@@ -50,7 +50,7 @@ fn main() -> Result<()> {
 
     // Print what we got (println!("{:?}", config) would be easier...).
     for (i, p) in config.person.iter().enumerate() {
-        println!("{}: {} fullname {:?} addr {:?}", i, p.name, p.fullname, p.addr);
+        println!("{}: {} fullname {:?} addr {:?}", i, p.name, p.fullname, p.address);
     }
 
     Ok(())
