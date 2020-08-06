@@ -48,7 +48,25 @@ impl Parser {
 
     // Check if we are at EOF (that is, self.next_token() will hit EOF).
     pub fn is_eof(&mut self) -> bool {
-        self.tokenizer.peek().ttype == TokenType::Eof
+        let pos = self.save_pos();
+        let mut is_eof = false;
+        loop {
+            match self.do_token(true) {
+                Ok(token) => {
+                    match token.ttype {
+                        TokenType::Nl => {},
+                        TokenType::Eof => {
+                            is_eof = true;
+                            break;
+                        }
+                        _ => break,
+                    }
+                },
+                Err(_) => break,
+            }
+        }
+        self.restore_pos(pos);
+        is_eof
     }
 
     // Expect a certain token-type.
@@ -144,7 +162,7 @@ impl<'a> Lookahead<'a> {
         let pos = parser.save_pos();
         let this_pos = pos;
         let token = loop {
-            match parser.do_token(false) {
+            match parser.do_token(true) {
                 Ok(token) if token.ttype != TokenType::Nl || !skipnl => break Ok(token),
                 Err(e) => break Err(e),
                 _ => {},

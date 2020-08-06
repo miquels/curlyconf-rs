@@ -15,6 +15,7 @@ pub struct Deserializer {
     level: u32,
     cur_name: Option<Token>,
     __label__: Option<Token>,
+    is_closed: bool,
     #[allow(dead_code)] // TODO
     mode: Mode,
 }
@@ -42,6 +43,7 @@ impl Deserializer {
             level: 0,
             cur_name: None,
             __label__: None,
+            is_closed: false,
             mode,
         }
     }
@@ -289,11 +291,15 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         let pos = self.parser.save_pos();
 
         // Give the visitor access to each element of the sequence.
-        if is_section {
+        let res = if is_section {
+            self.is_closed = true;
             visitor.visit_seq(SectionAccess::new(&mut self, None, None))
         } else {
+            self.is_closed = false;
             visitor.visit_seq(ListAccess::new(&mut self))
-        }.map_err(|e| update_pos(e, pos))
+        }.map_err(|e| update_pos(e, pos));
+
+        res
     }
 
     // Tuples look just like sequences.
@@ -342,10 +348,11 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         let sa = SectionAccess::new(&mut self, label.map(|t| t.value), None);
         let value = visitor.visit_map(sa).map_err(|e| update_pos(e, pos))?;
 
-        // Parse the closing brace of the map, but don't consume it.
-        let mut lookahead = self.parser.lookahead();
-        lookahead.peek(TokenType::RcBrace)?;
-        lookahead.end()?;
+        // Parse the closing brace of the map.
+        self.parser.expect(TokenType::RcBrace)?;
+
+        // We don't expect a ';' or '\n' after this.
+        self.is_closed = true;
 
         Ok(value)
     }
@@ -403,10 +410,11 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         log::debug!("XX level is {}", self.level);
         if self.level != 0 {
             // Parse the closing brace of the map.
-            let mut lookahead = self.parser.lookahead();
-            lookahead.peek(TokenType::RcBrace)?;
-            lookahead.end()?;
+            self.parser.expect(TokenType::RcBrace)?;
         }
+
+        // We don't expect a ';' or '\n' after this.
+        self.is_closed = true;
 
         Ok(value)
     }
@@ -529,9 +537,6 @@ impl<'de, 'a> SeqAccess<'de> for SectionAccess<'a> {
         log::debug!("SectionAccess::SeqAccess::next_element_seed {:?}", self.name);
 
         if !self.first {
-            // eat the closing-brace of the previous struct.
-            let saved_pos = self.de.parser.save_pos();
-            self.de.parser.expect(TokenType::RcBrace)?;
 
             // See if the next section is a continuation.
             if let Some(ref name) = self.name {
@@ -544,10 +549,6 @@ impl<'de, 'a> SeqAccess<'de> for SectionAccess<'a> {
                     }
                 }
                 if !continuation {
-                    // Undo the eating of the closing brace.
-                    // This is so that both a section{} and a list of section{}s
-                    // end in a closing brace, which is a terminating token, like ';' is.
-                    self.de.parser.restore_pos(saved_pos);
                     log::debug!("SectionAccess::SeqAccess: end of section {:?}", name);
                     return Ok(None);
                 }
@@ -577,16 +578,11 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
             return seed.deserialize(de).map(Some);
         }
 
-        // Separator is required between key/value entries (';' or '\n')
         if !self.first {
-            // if this was a section, it ends in '}' instead of ';'
-            let mut expect = self.de.eov;
-            if let Some(token) = self.de.parser.peeknl()? {
-                if token.ttype == TokenType::RcBrace {
-                    expect = TokenType::RcBrace;
-                }
+            if !self.de.is_closed {
+                // end-of-value is required after a value.
+                self.de.parser.expect(self.de.eov)?;
             }
-            self.de.parser.expect(expect)?;
         }
         self.first = false;
 
@@ -641,6 +637,7 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
         }
 
         // Deserialize a map value.
+        self.de.is_closed = false;
         let token = self.de.parser.peek()?;
         seed.deserialize(&mut *self.de).map_err(|e| update_tpos(e, &token))
     }
