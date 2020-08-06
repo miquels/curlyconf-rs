@@ -118,6 +118,7 @@ impl Parser {
     }
 
     // Peek at the next token. Returns Ok(None) on EOF instead of an error.
+    #[allow(dead_code)]
     pub fn peeknl(&mut self) -> Result<Option<Token>> {
         let pos = self.save_pos();
         let token = self.do_token(true)?;

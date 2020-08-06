@@ -272,6 +272,7 @@ impl Tokenizer {
 
         let s = &self.data[self.pos.offset..];
         let pos = self.pos;
+        let mut dq = false;
 
         // We can figure out tokentype based on the first char.
         let mut chars = s.chars();
@@ -284,7 +285,10 @@ impl Tokenizer {
             ',' => self.parse_token(TokenType::Comma),
             ';' => self.parse_token(TokenType::Semi),
             '=' => self.parse_token(TokenType::Equal),
-            '"' => self.parse_dqstring(),
+            '"' => {
+                dq = true;
+                self.parse_dqstring()
+            },
             '\'' => self.parse_sqstring(),
             _ => self.parse_word(),
         };
@@ -292,7 +296,7 @@ impl Tokenizer {
         Token {
             ttype: t,
             pos,
-            value: self.data[range].to_string(),
+            value: expand_string(dq, &self.data[range]),
         }
     }
 
@@ -311,6 +315,42 @@ impl Tokenizer {
         token
     }
 }
+
+fn expand_string(dq: bool, s: &str) -> String {
+    if !dq || !s.contains("\\") {
+        return s.to_string();
+    }
+    let mut r = String::with_capacity(s.len());
+    let mut escaped = false;
+    for c in s.chars() {
+        if !escaped {
+            if c == '\\' {
+                escaped = true;
+            } else {
+                r.push(c);
+            }
+            continue;
+        }
+        let x = match c {
+            '\\' => '\\',
+            '0' => 0 as char,
+            'a' => 7 as char,
+            'b' => 8 as char,
+            'e' => 27 as char,
+            'f' => 12 as char,
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            'v' => 11 as char,
+            x => x,
+        };
+        escaped = false;
+        r.push(x);
+    }
+    r
+}
+
+
 /*
 static WORD_RE: Lazy<Regex> = Lazy::new(|| RegexSet::new(&[
         r"^[A-Za-z_][A-Za-z0-9_]*$",                            // ident
