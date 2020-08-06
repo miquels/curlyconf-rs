@@ -1,7 +1,3 @@
-use std::collections::VecDeque;
-use std::fs;
-use std::io::{self, Error as IoError, ErrorKind as Kind};
-
 type Range = std::ops::Range<usize>;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -19,6 +15,7 @@ pub enum TokenType {
     Unknown,
     Ident,
     Expr,
+    Eof,
 }
 use TokenType::*;
 
@@ -38,6 +35,7 @@ impl TokenType {
             Unknown => "[unknown]",
             Ident => "identifier", // alias for Word
             Expr => "expression",  // alias for Word
+            Eof => "end-of-data",
         }
     }
 }
@@ -71,7 +69,6 @@ impl TokenPos {
 pub struct Tokenizer {
     file: String,
     data: String,
-    buf: VecDeque<Token>,
     pub(crate) pos: TokenPos,
     pub(crate) nl_token: bool,
 }
@@ -91,47 +88,35 @@ impl Token {
 }
 
 impl Tokenizer {
-    pub fn from_string(s: impl Into<String>) -> Tokenizer {
+    pub fn from_string(s: impl Into<String>, nl_is_token: bool) -> Tokenizer {
         Tokenizer {
-            file: "[data]".to_string(),
+            file: "cfg-data".to_string(),
             data: s.into(),
             pos: TokenPos::new(),
-            nl_token: false,
-            buf: VecDeque::new(),
+            nl_token: nl_is_token,
         }
-    }
-
-    pub fn from_file(name: impl Into<String>) -> io::Result<Tokenizer> {
-        let name = name.into();
-        let data = fs::read(&name)?;
-        let text = String::from_utf8(data).map_err(|_| IoError::new(Kind::Other, "utf-8 error"))?;
-
-        Ok(Tokenizer {
-            file: name,
-            data: text,
-            pos: TokenPos::new(),
-            nl_token: false,
-            buf: VecDeque::new(),
-        })
     }
 
     pub fn update_pos(&mut self, n: usize) {
         let s = &self.data[self.pos.offset..self.pos.offset + n];
         for c in s.chars() {
+            self.pos.offset += c.len_utf8();
             if c == '\n' {
-                self.pos.line += 1;
-                self.pos.column = 1;
+                if self.pos.offset < self.data.len() {
+                    self.pos.line += 1;
+                    self.pos.column = 1;
+                }
             } else {
                 self.pos.column += c.len_utf8() as u32;
             }
         }
-        self.pos.offset += s.len();
     }
 
-    pub fn skip_space(&self) -> Option<usize> {
+    pub fn skip_space(&self) -> usize {
         let mut n = 0;
         let mut comment = false;
         let mut s = self.data[self.pos.offset..].chars();
+        let start_column = self.pos.column;
         while let Some(c) = s.next() {
             if comment {
                 if c == '\n' {
@@ -146,16 +131,12 @@ impl Tokenizer {
                 n += 1;
                 continue;
             }
-            if !c.is_whitespace() || (self.nl_token && c == '\n') {
+            if !c.is_whitespace() || (self.nl_token && start_column > 1 && c == '\n') {
                 break;
             }
             n += c.len_utf8();
         }
-        if self.pos.offset + n == self.data.len() {
-            None
-        } else {
-            Some(n)
-        }
+        n
     }
 
     fn parse_sqstring(&mut self) -> (TokenType, Range) {
@@ -278,20 +259,17 @@ impl Tokenizer {
         )
     }
 
-    pub fn push_token(&mut self, token: Token) {
-        self.buf.push_front(token);
-    }
-
-    fn do_next_token(&mut self, peek: bool) -> Option<Token> {
-        if let Some(token) = self.buf.pop_back() {
-            if peek {
-                self.buf.push_back(token.clone());
-            }
-            return Some(token);
-        }
-        let oldpos = self.pos;
-        let n = self.skip_space()?;
+    pub fn next_token(&mut self) -> Token {
+        let n = self.skip_space();
         self.update_pos(n);
+        if self.pos.offset == self.data.len() {
+            return Token {
+                ttype: TokenType::Eof,
+                pos: self.pos,
+                value: "".to_string(),
+            };
+        }
+
         let s = &self.data[self.pos.offset..];
         let pos = self.pos;
 
@@ -311,23 +289,26 @@ impl Tokenizer {
             _ => self.parse_word(),
         };
 
-        if peek {
-            self.pos = oldpos;
-        }
-
-        Some(Token {
+        Token {
             ttype: t,
             pos,
             value: self.data[range].to_string(),
-        })
+        }
     }
 
-    pub fn next_token(&mut self) -> Option<Token> {
-        self.do_next_token(false)
+    pub fn save_pos(&self) -> TokenPos {
+        self.pos
     }
 
-    pub fn peek(&mut self) -> Option<Token> {
-        self.do_next_token(true)
+    pub fn restore_pos(&mut self, pos: TokenPos) {
+        self.pos = pos;
+    }
+
+    pub fn peek(&mut self) -> Token {
+        let pos = self.save_pos();
+        let token = self.next_token();
+        self.restore_pos(pos);
+        token
     }
 }
 /*

@@ -1,16 +1,10 @@
 mod de;
 mod error;
 mod parser;
-mod tokenizer;
+pub mod tokenizer;
 
-pub use de::from_str;
-pub use error::Error;
-pub use tokenizer::*;
+pub use de::{from_str, from_file, Mode};
+//pub use error::Error;
+//pub use tokenizer::{TokenType, Tokenizer};
+//pub use parser::Parser;
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
-}
