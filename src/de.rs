@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use serde::de::{self, DeserializeSeed, IntoDeserializer, MapAccess, SeqAccess, Visitor};
@@ -18,12 +18,13 @@ pub struct Deserializer {
     #[allow(dead_code)] // TODO
     mode: Mode,
     aliases: HashMap<String, String>,
+    sections: HashSet<String>,
 }
 
 pub const MAGIC_SECTION_NAME: &'static str = "__xyzzy_section_name__";
 
 impl Deserializer {
-    pub fn from_str(s: impl Into<String>, mode: Mode) -> Self {
+    pub fn from_str(s: impl Into<String>, mode: Mode, aliases: HashMap<String, String>, sections: HashSet<String>) -> Self {
         let tokenizer = Tokenizer::from_string(s, mode != Mode::Semicolon);
         let parser = Parser::new(tokenizer);
         let eov = if mode == Mode::Semicolon { TokenType::Semi } else { TokenType::Nl };
@@ -35,7 +36,8 @@ impl Deserializer {
             __label__: None,
             is_closed: false,
             mode,
-            aliases: HashMap::new(),
+            aliases,
+            sections,
         }
     }
 }
@@ -49,6 +51,12 @@ impl Deserializer {
         let value: T = FromStr::from_str(&word.value)
             .map_err(|_| Error::new(format!("expected {} value", name), word.pos))?;
         Ok((word.pos, value))
+    }
+
+    fn same_section(&self, t1: &Token, t2: &Token) -> bool {
+        let t1 = self.aliases.get(&t1.value).unwrap_or(&t1.value);
+        let t2 = self.aliases.get(&t2.value).unwrap_or(&t2.value);
+        t1 == t2
     }
 }
 
@@ -239,7 +247,9 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     {
         // Peek ahead to see if this is a value or a section.
         let mut lookahead = self.parser.lookahead();
+        let cur_name = self.cur_name.as_ref().map(|s| s.value.as_str()).unwrap_or("");
         let is_section =
+            self.sections.contains(cur_name) ||
             lookahead.peek(TokenType::LcBrace)?.is_some() ||
             lookahead.peek2(TokenType::Expr, TokenType::LcBrace)?.is_some();
         let pos = self.parser.save_pos();
@@ -333,7 +343,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
             log::debug!("deserialize_struct({}): peeked: {:?}", _name, token);
             if let Some(lbl) = token {
                 // yes. so "fields" must contain "__label__".
-                lookahead.advance();
+                lookahead.advance(&mut self.parser);
                 if !fields.contains(&"__label__") {
                     log::debug!("deserialize_struct({}): fields has no __label__", _name);
                     return Err(Error::new(format!("expected '{{'"), lbl.pos));
@@ -401,7 +411,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     {
         let word = self.parser.expect(TokenType::Word)?;
         Err(Error::new(
-            "BUG: serde called deserialize_ignored_any",
+            format!("BUG: serde called deserialize_ignored_any for {:?}", word),
             word.pos,
         ))
     }
@@ -441,7 +451,7 @@ impl<'de, 'a> SeqAccess<'de> for ListAccess<'a> {
 
             // Is this a comma?
             if let Some(_) = lookahead.peek(TokenType::Comma)? {
-                lookahead.advance();
+                lookahead.advance(&mut self.de.parser);
             }
 
             // or end-of-value? (eg ';' or '\n')
@@ -449,14 +459,21 @@ impl<'de, 'a> SeqAccess<'de> for ListAccess<'a> {
 
                 // See if the next section is a continuation.
                 if let Some(ref name) = self.name {
-                    lookahead.advance();
+                    lookahead.advance(&mut self.de.parser);
 
                     let mut continuation = false;
-                    let mut lookahead = lookahead.lookahead();
+                    let mut lookahead = self.de.parser.lookahead();
+
                     if let Some(token) = lookahead.peek(TokenType::Ident)? {
-                        if &token.value == &name.value {
+                        if self.de.same_section(&token, &name) {
+
+                            // It is a continuation. The value name might be an
+                            // alias, so update the current name. This is _only_
+                            // useful for the SectionName trait.
+                            self.name = Some(token.clone());
+                            self.de.cur_name = Some(token);
                             continuation = true;
-                            lookahead.advance();
+                            lookahead.advance(&mut self.de.parser);
                         }
                     }
                     if !continuation {
@@ -514,16 +531,24 @@ impl<'de, 'a> SeqAccess<'de> for SectionAccess<'a> {
 
             // See if the next section is a continuation.
             if let Some(ref name) = self.name {
+
                 let mut continuation = false;
                 let mut lookahead = self.de.parser.lookahead();
+
                 if let Some(token) = lookahead.peek(TokenType::Ident)? {
-                    if &token.value == &name.value {
+                    if self.de.same_section(&token, &name) {
+
+                        // It is a continuation. The value name might be an
+                        // alias, so update the current name. This is _only_
+                        // useful for the SectionName trait.
+                        self.name = Some(token.clone());
+                        self.de.cur_name = Some(token);
                         continuation = true;
-                        lookahead.advance();
+                        lookahead.advance(&mut self.de.parser);
                     }
                 }
                 if !continuation {
-                    log::debug!("SectionAccess::SeqAccess: end of section {:?}", name);
+                    //log::debug!("SectionAccess::SeqAccess: end of section {:?}", name);
                     return Ok(None);
                 }
             }

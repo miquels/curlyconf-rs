@@ -147,19 +147,18 @@ impl Parser {
     }
 }
 
-pub struct Lookahead<'a> {
+pub struct Lookahead {
     token: Result<Token>,
     token2: Result<Token>,
     this_pos: TokenPos,
     next_pos: TokenPos,
     next_pos2: TokenPos,
-    parser: &'a mut Parser,
     expected: Vec<Cow<'static, str>>,
     found: bool,
 }
 
-impl<'a> Lookahead<'a> {
-    pub fn do_new(parser: &'a mut Parser, skipnl: bool) -> Lookahead<'a> {
+impl Lookahead {
+    pub fn do_new(parser: &mut Parser, skipnl: bool) -> Lookahead {
         let pos = parser.save_pos();
         let this_pos = pos;
         let token = loop {
@@ -188,15 +187,14 @@ impl<'a> Lookahead<'a> {
             next_pos2,
             expected: Vec::new(),
             found: false,
-            parser,
         }
     }
 
-    pub fn new(parser: &'a mut Parser) -> Lookahead<'a> {
+    pub fn new(parser: &mut Parser) -> Lookahead {
         Lookahead::do_new(parser, true)
     }
 
-    pub fn newnl(parser: &'a mut Parser) -> Lookahead<'a> {
+    pub fn newnl(parser: &mut Parser) -> Lookahead {
         Lookahead::do_new(parser, false)
     }
 
@@ -270,9 +268,9 @@ impl<'a> Lookahead<'a> {
         None
     }
 
-    pub fn advance(&mut self) {
+    pub fn advance(&mut self, parser: &mut Parser) {
         log::debug!("lookahead::advance: to {:?}", self.next_pos);
-        self.parser.restore_pos(self.next_pos);
+        parser.restore_pos(self.next_pos);
         self.expected.clear();
         self.found = false;
     }
@@ -291,10 +289,6 @@ impl<'a> Lookahead<'a> {
             msg += &format!(" or {}", last);
         }
         Err(Error::new(msg, self.this_pos))
-    }
-
-    pub fn lookahead(&mut self) -> Lookahead {
-        self.parser.lookahead()
     }
 }
 

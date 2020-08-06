@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io::{self, Error as IoError, ErrorKind as Kind};
@@ -22,28 +22,73 @@ pub enum Mode {
 }
 
 /// Read configuration from a string.
-pub fn from_str<T>(s: &str, mode: Mode) -> Result<T>
+pub fn from_str<T>(s: &str) -> Result<T>
 where
     T: for<'de> Deserialize<'de>,
 {
-    let mut deserializer = Deserializer::from_str(s, mode);
-    T::deserialize(&mut deserializer)
+    Builder::new().from_str(s)
 }
 
 /// Read configuration from a file.
-pub fn from_file<T>(name: impl Into<String>, mode: Mode) -> io::Result<T>
+pub fn from_file<T>(name: impl Into<String>) -> io::Result<T>
 where
     T: for<'de> Deserialize<'de>,
 {
-    let name = name.into();
-    let data = fs::read(&name)
-        .map_err(|e| IoError::new(e.kind(), format!("{}: {}", name, e)))?;
-    let text = String::from_utf8(data)
-        .map_err(|_| IoError::new(Kind::Other, format!("{}: utf-8 error", name)))?;
-    let mut deserializer = Deserializer::from_str(text, mode);
-    T::deserialize(&mut deserializer)
-        .map_err(|mut e| { e.file_name = name; e })
-        .map_err(|e| IoError::new(Kind::Other, e))
+    Builder::new().from_file(name)
+}
+
+pub struct Builder {
+    mode:   Mode,
+    aliases:   HashMap<String, String>,
+    sections:   HashSet<String>,
+}
+
+impl Builder {
+    pub fn new() -> Builder {
+        Builder {
+            mode:   Mode::Semicolon,
+            aliases:    HashMap::new(),
+            sections:   HashSet::new(),
+        }
+    }
+
+    pub fn mode(mut self, mode: Mode) -> Builder {
+        self.mode = mode;
+        self
+    }
+
+    pub fn alias(mut self, alias: impl Into<String>, section_name: impl Into<String>) -> Builder {
+        self.aliases.insert(alias.into(), section_name.into());
+        self
+    }
+
+    pub fn section(mut self, section_name: impl Into<String>) -> Builder {
+        self.sections.insert(section_name.into());
+        self
+    }
+
+    pub fn from_str<T>(self, text: &str) -> Result<T>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
+        let mut deserializer = Deserializer::from_str(text, self.mode, self.aliases, self.sections);
+        T::deserialize(&mut deserializer)
+    }
+
+    pub fn from_file<T>(self, name: impl Into<String>) -> io::Result<T>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
+        let name = name.into();
+        let data = fs::read(&name)
+            .map_err(|e| IoError::new(e.kind(), format!("{}: {}", name, e)))?;
+        let text = String::from_utf8(data)
+            .map_err(|_| IoError::new(Kind::Other, format!("{}: utf-8 error", name)))?;
+        let mut deserializer = Deserializer::from_str(text, self.mode, self.aliases, self.sections);
+        T::deserialize(&mut deserializer)
+            .map_err(|mut e| { e.file_name = name; e })
+            .map_err(|e| IoError::new(Kind::Other, e))
+    }
 }
 
 // We need a "backdoor" into our Deserializer. It would be great if
