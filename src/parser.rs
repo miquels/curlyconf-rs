@@ -12,14 +12,11 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(tokenizer: Tokenizer) -> Parser {
-        Parser {
-            tokenizer
-        }
+        Parser { tokenizer }
     }
 
     // Read the next token, and translate unexpected tokens to errors.
     fn do_token(&mut self, eof_ok: bool) -> Result<Token> {
-
         let token = self.tokenizer.next_token();
 
         match token.ttype {
@@ -28,7 +25,7 @@ impl Parser {
                     return Ok(token.clone());
                 }
                 return Err(Error::new("unexpected end-of-file", token.pos));
-            },
+            }
             TokenType::UnterminatedString => {
                 return Err(Error::new("unterminated string literal", token.pos));
             }
@@ -52,15 +49,13 @@ impl Parser {
         let mut is_eof = false;
         loop {
             match self.do_token(true) {
-                Ok(token) => {
-                    match token.ttype {
-                        TokenType::Nl => {},
-                        TokenType::Eof => {
-                            is_eof = true;
-                            break;
-                        }
-                        _ => break,
+                Ok(token) => match token.ttype {
+                    TokenType::Nl => {}
+                    TokenType::Eof => {
+                        is_eof = true;
+                        break;
                     }
+                    _ => break,
                 },
                 Err(_) => break,
             }
@@ -165,7 +160,7 @@ impl Lookahead {
             match parser.do_token(true) {
                 Ok(token) if token.ttype != TokenType::Nl || !skipnl => break Ok(token),
                 Err(e) => break Err(e),
-                _ => {},
+                _ => {}
             }
         };
         let next_pos = parser.save_pos();
@@ -173,7 +168,7 @@ impl Lookahead {
             match parser.do_token(true) {
                 Ok(token) if token.ttype != TokenType::Nl || !skipnl => break Ok(token),
                 Err(e) => break Err(e),
-                _ => {},
+                _ => {}
             }
         };
         let next_pos2 = parser.save_pos();
@@ -199,7 +194,6 @@ impl Lookahead {
     }
 
     pub fn peek(&mut self, want: TokenType) -> Result<Option<Token>> {
-
         if self.found {
             return Ok(None);
         }
@@ -213,14 +207,12 @@ impl Lookahead {
     }
 
     pub fn peek2(&mut self, want1: TokenType, want2: TokenType) -> Result<Option<Token>> {
-
         if self.found {
             return Ok(None);
         }
 
         let token1 = self.token.clone()?;
         if let Some(t1) = self.do_peek(token1, want1) {
-
             if let Ok(token2) = self.token2.clone() {
                 if let Some(t2) = self.do_peek(token2, want2) {
                     // We have a match.
@@ -228,7 +220,7 @@ impl Lookahead {
                     // If the first token is a word/ident/expr, return that,
                     // otherwise return the second token.
                     match t1.ttype {
-                        TokenType::Word|TokenType::Ident|TokenType::Expr => {
+                        TokenType::Word | TokenType::Ident | TokenType::Expr => {
                             return Ok(Some(t1));
                         }
                         _ => return Ok(Some(t2)),
@@ -243,7 +235,6 @@ impl Lookahead {
     }
 
     fn do_peek(&mut self, mut token: Token, want: TokenType) -> Option<Token> {
-
         if token.ttype == TokenType::Word {
             if want == TokenType::Ident && is_ident(&mut token) {
                 self.found = true;

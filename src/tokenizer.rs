@@ -145,7 +145,8 @@ impl Tokenizer {
                 n += 1;
                 continue;
             }
-            if !c.is_whitespace() || (self.mode != Mode::Semicolon && start_column > 1 && c == '\n') {
+            if !c.is_whitespace() || (self.mode != Mode::Semicolon && start_column > 1 && c == '\n')
+            {
                 break;
             }
             n += c.len_utf8();
@@ -253,7 +254,10 @@ impl Tokenizer {
         }
 
         self.update_pos(n);
-        let range = Range { start: offset, end: offset + n };
+        let range = Range {
+            start: offset,
+            end: offset + n,
+        };
 
         // Yes, this is kind of ugly.
         if self.mode == Mode::Diablo && &self.data[range.clone()] == "end" {
@@ -304,7 +308,7 @@ impl Tokenizer {
             '"' => {
                 dq = true;
                 self.parse_dqstring()
-            },
+            }
             '\'' => self.parse_sqstring(),
             _ => self.parse_word(),
         };
@@ -365,7 +369,6 @@ fn expand_string(dq: bool, s: &str) -> String {
     }
     r
 }
-
 
 /*
 static WORD_RE: Lazy<Regex> = Lazy::new(|| RegexSet::new(&[

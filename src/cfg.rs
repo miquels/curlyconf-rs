@@ -27,17 +27,17 @@ where
 }
 
 pub struct Builder {
-    mode:   Mode,
-    aliases:   HashMap<String, String>,
-    sections:   HashSet<String>,
+    mode: Mode,
+    aliases: HashMap<String, String>,
+    sections: HashSet<String>,
 }
 
 impl Builder {
     pub fn new() -> Builder {
         Builder {
-            mode:   Mode::Semicolon,
-            aliases:    HashMap::new(),
-            sections:   HashSet::new(),
+            mode: Mode::Semicolon,
+            aliases: HashMap::new(),
+            sections: HashSet::new(),
         }
     }
 
@@ -69,13 +69,16 @@ impl Builder {
         T: for<'de> Deserialize<'de>,
     {
         let name = name.into();
-        let data = fs::read(&name)
-            .map_err(|e| IoError::new(e.kind(), format!("{}: {}", name, e)))?;
+        let data =
+            fs::read(&name).map_err(|e| IoError::new(e.kind(), format!("{}: {}", name, e)))?;
         let text = String::from_utf8(data)
             .map_err(|_| IoError::new(Kind::Other, format!("{}: utf-8 error", name)))?;
         let mut deserializer = Deserializer::from_str(text, self.mode, self.aliases, self.sections);
         T::deserialize(&mut deserializer)
-            .map_err(|mut e| { e.file_name = name; e })
+            .map_err(|mut e| {
+                e.file_name = name;
+                e
+            })
             .map_err(|e| IoError::new(Kind::Other, e))
     }
 }
@@ -110,7 +113,10 @@ pub trait SectionName<'de>: de::Deserializer<'de> {
     fn section_name(&self) -> Option<String>;
 }
 
-impl<'a, 'de, T> SectionName<'de> for T where T: de::Deserializer<'de> {
+impl<'a, 'de, T> SectionName<'de> for T
+where
+    T: de::Deserializer<'de>,
+{
     fn section_name(&self) -> Option<String> {
         //
         // `self` is already a reference, see crate::de, where the impl is
@@ -119,7 +125,8 @@ impl<'a, 'de, T> SectionName<'de> for T where T: de::Deserializer<'de> {
         // level. If anyone knows a _safe_ solution - let me know!
         //
         let this = unsafe { std::ptr::read(self as *const Self) };
-        this.deserialize_unit_struct(MAGIC_SECTION_NAME, MyVisitor).unwrap()
+        this.deserialize_unit_struct(MAGIC_SECTION_NAME, MyVisitor)
+            .unwrap()
     }
 }
 

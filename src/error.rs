@@ -39,7 +39,11 @@ impl fmt::Display for Error {
         if self.pos.line == 0 {
             write!(f, "{}: {}", self.file_name, self.msg)
         } else {
-            write!(f, "{}:{}:{}: {}", self.file_name, self.pos.line, self.pos.column, self.msg)
+            write!(
+                f,
+                "{}:{}:{}: {}",
+                self.file_name, self.pos.line, self.pos.column, self.msg
+            )
         }
     }
 }

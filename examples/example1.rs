@@ -26,8 +26,7 @@ type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 fn main() -> Result<()> {
     env_logger::init();
 
-    let cfg = 
-        r#"
+    let cfg = r#"
         # Peer.
         logger syslog {
             target 1.2.3.4;
@@ -41,8 +40,7 @@ fn main() -> Result<()> {
         }
 "#;
 
-    let cfg2 = 
-        r#"
+    let cfg2 = r#"
         # Peer.
         peer foo {
             hostname "host1"
@@ -58,12 +56,12 @@ fn main() -> Result<()> {
 
     match curlyconf::from_str(cfg, curlyconf::Mode::Semicolon) {
         Err(e) => println!("{}", e),
-        Ok(config @ Config{..}) => println!("{:#?}", config),
+        Ok(config @ Config { .. }) => println!("{:#?}", config),
     }
 
     match curlyconf::from_str(cfg2, curlyconf::Mode::Newline) {
         Err(e) => println!("{}", e),
-        Ok(config @ Config{..}) => println!("{:#?}", config),
+        Ok(config @ Config { .. }) => println!("{:#?}", config),
     }
 
     Ok(())

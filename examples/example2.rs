@@ -33,7 +33,10 @@ fn main() -> Result<()> {
 
     // Print what we got (println!("{:?}", config) would be easier...).
     for (i, p) in config.person.iter().enumerate() {
-        println!("{}: {} fullname {:?} addr {:?}", i, p.name, p.fullname, p.address);
+        println!(
+            "{}: {} fullname {:?} addr {:?}",
+            i, p.name, p.fullname, p.address
+        );
     }
 
     Ok(())
