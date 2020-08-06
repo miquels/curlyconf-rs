@@ -292,6 +292,10 @@ impl<'a> Lookahead<'a> {
         }
         Err(Error::new(msg, self.this_pos))
     }
+
+    pub fn lookahead(&mut self) -> Lookahead {
+        self.parser.lookahead()
+    }
 }
 
 pub(crate) fn is_ident(token: &mut Token) -> bool {

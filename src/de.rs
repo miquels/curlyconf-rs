@@ -1,10 +1,9 @@
-use std::fs;
-use std::io::{self, Error as IoError, ErrorKind as Kind};
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use serde::de::{self, DeserializeSeed, IntoDeserializer, MapAccess, SeqAccess, Visitor};
-use serde::Deserialize;
 
+use crate::cfg::Mode;
 use crate::error::{Error, Result};
 use crate::parser::Parser;
 use crate::tokenizer::{Tokenizer, Token, TokenType, TokenPos};
@@ -18,22 +17,13 @@ pub struct Deserializer {
     is_closed: bool,
     #[allow(dead_code)] // TODO
     mode: Mode,
+    aliases: HashMap<String, String>,
 }
 
-/// Config file parser variant.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-#[non_exhaustive]
-pub enum Mode {
-    /// variable settings end in a newline.
-    Newline,
-    /// variable settings must be terminated with a ';'
-    Semicolon,
-    #[doc(hidden)]
-    Diablo,
-}
+pub const MAGIC_SECTION_NAME: &'static str = "__xyzzy_section_name__";
 
 impl Deserializer {
-    fn from_str(s: impl Into<String>, mode: Mode) -> Self {
+    pub fn from_str(s: impl Into<String>, mode: Mode) -> Self {
         let tokenizer = Tokenizer::from_string(s, mode != Mode::Semicolon);
         let parser = Parser::new(tokenizer);
         let eov = if mode == Mode::Semicolon { TokenType::Semi } else { TokenType::Nl };
@@ -45,33 +35,9 @@ impl Deserializer {
             __label__: None,
             is_closed: false,
             mode,
+            aliases: HashMap::new(),
         }
     }
-}
-
-/// Read configuration from a string.
-pub fn from_str<T>(s: &str, mode: Mode) -> Result<T>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    let mut deserializer = Deserializer::from_str(s, mode);
-    T::deserialize(&mut deserializer)
-}
-
-/// Read configuration from a file.
-pub fn from_file<T>(name: impl Into<String>, mode: Mode) -> io::Result<T>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    let name = name.into();
-    let data = fs::read(&name)
-        .map_err(|e| IoError::new(e.kind(), format!("{}: {}", name, e)))?;
-    let text = String::from_utf8(data)
-        .map_err(|_| IoError::new(Kind::Other, format!("{}: utf-8 error", name)))?;
-    let mut deserializer = Deserializer::from_str(text, mode);
-    T::deserialize(&mut deserializer)
-        .map_err(|mut e| { e.file_name = name; e })
-        .map_err(|e| IoError::new(Kind::Other, e))
 }
 
 impl Deserializer {
@@ -84,22 +50,6 @@ impl Deserializer {
             .map_err(|_| Error::new(format!("expected {} value", name), word.pos))?;
         Ok((word.pos, value))
     }
-}
-
-fn update_pos(mut e: Error, pos: TokenPos) -> Error {
-    //println!("update_pos {:?} {:?}", e, pos);
-    if e.pos.offset == 0 {
-        e.pos = pos;
-    }
-    e
-}
-
-fn update_tpos(mut e: Error, token: &Option<Token>) -> Error {
-    //println!("update_tpos {:?} {:?}", e, token);
-    if e.pos.offset == 0 {
-        e.pos = token.as_ref().map(|t| t.pos).unwrap_or(TokenPos::none());
-    }
-    e
 }
 
 impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
@@ -261,10 +211,14 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     }
 
     // Unit struct means a named value containing no data.
-    fn deserialize_unit_struct<V>(self, _name: &'static str, _visitor: V) -> Result<V::Value>
+    fn deserialize_unit_struct<V>(self, name: &'static str, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
+        if name == MAGIC_SECTION_NAME {
+            let cur_name = self.cur_name.as_ref().map(|s| s.value.as_str());
+            return visitor.visit_str(cur_name.unwrap_or(""));
+        }
         unimplemented!()
     }
 
@@ -456,6 +410,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
 // This handles a comma-separated list.
 struct ListAccess<'a> {
     de: &'a mut Deserializer,
+    name: Option<Token>,
     first: bool,
 }
 
@@ -464,6 +419,7 @@ impl<'a> ListAccess<'a> {
         de: &'a mut Deserializer,
     ) -> Self {
         ListAccess {
+            name: de.cur_name.clone(),
             de,
             first: true,
         }
@@ -480,16 +436,34 @@ impl<'de, 'a> SeqAccess<'de> for ListAccess<'a> {
         T: DeserializeSeed<'de>,
     {
         if !self.first {
+            let pos = self.de.parser.save_pos();
             let mut lookahead = self.de.parser.lookaheadnl();
 
-            // end-of-value? (eg ';' or '\n')
-            if let Some(_) = lookahead.peek(self.de.eov)? {
-                return Ok(None);
-            }
-
-            // comma must be next.
+            // Is this a comma?
             if let Some(_) = lookahead.peek(TokenType::Comma)? {
                 lookahead.advance();
+            }
+
+            // or end-of-value? (eg ';' or '\n')
+            if let Some(_) = lookahead.peek(self.de.eov)? {
+
+                // See if the next section is a continuation.
+                if let Some(ref name) = self.name {
+                    lookahead.advance();
+
+                    let mut continuation = false;
+                    let mut lookahead = lookahead.lookahead();
+                    if let Some(token) = lookahead.peek(TokenType::Ident)? {
+                        if &token.value == &name.value {
+                            continuation = true;
+                            lookahead.advance();
+                        }
+                    }
+                    if !continuation {
+                        self.de.parser.restore_pos(pos);
+                        return Ok(None);
+                    }
+                }
             }
             lookahead.end()?;
         }
@@ -506,14 +480,14 @@ struct SectionAccess<'a> {
     label: Option<String>,
     first: bool,
     name: Option<Token>,
-    fields: Option<&'static [&'static str]>,
+    _fields: Option<&'static [&'static str]>,
 }
 
 impl<'a> SectionAccess<'a> {
     fn new(
         de: &'a mut Deserializer,
         label: Option<String>,
-        fields: Option<&'static [&'static str]>,
+        _fields: Option<&'static [&'static str]>,
     ) -> Self {
         log::debug!("SectionAccess::new");
         SectionAccess {
@@ -521,7 +495,7 @@ impl<'a> SectionAccess<'a> {
             label,
             de,
             first: true,
-            fields,
+            _fields,
         }
     }
 }
@@ -600,6 +574,7 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
         if let Some(ref token) = token {
 
             // yes, we have an identifier. must be one of the struct fieldnames.
+            /*
             let fields = self.fields.as_ref().unwrap();
             if !fields.contains(&(token.value.as_str()))
             {
@@ -610,7 +585,7 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
                     format!("unknown key: `{}'", token.value),
                     token.pos,
                 ));
-            }
+            }*/
             log::debug!("XXX set cur_name to {}", token.value);
             self.de.cur_name = Some(token.clone());
         }
@@ -643,43 +618,20 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde::Deserialize;
-
-    fn init() {
-        let _ = env_logger::builder().is_test(true).try_init();
+// helper
+fn update_pos(mut e: Error, pos: TokenPos) -> Error {
+    //println!("update_pos {:?} {:?}", e, pos);
+    if e.pos.offset == 0 {
+        e.pos = pos;
     }
+    e
+}
 
-    #[test]
-    fn test_struct() {
-        init();
-
-        #[derive(Deserialize, PartialEq, Debug)]
-        struct Main {
-            test: Test,
-        }
-
-        #[derive(Deserialize, PartialEq, Debug)]
-        #[serde(rename = "test")]
-        struct Test {
-            __label__: String,
-            int: u32,
-            seq: Vec<String>,
-        }
-
-        let j = r#"test foo {
-            int 1;
-            seq a,"b";
-        };"#;
-        let expected = Main {
-            test: Test {
-                __label__: "foo".to_owned(),
-                int: 1,
-                seq: vec!["a".to_owned(), "b".to_owned()],
-            },
-        };
-        assert_eq!(expected, from_str(j).unwrap());
+// helper
+fn update_tpos(mut e: Error, token: &Option<Token>) -> Error {
+    //println!("update_tpos {:?} {:?}", e, token);
+    if e.pos.offset == 0 {
+        e.pos = token.as_ref().map(|t| t.pos).unwrap_or(TokenPos::none());
     }
+    e
 }
