@@ -13,11 +13,24 @@ pub enum TokenType {
     Word,
     UnterminatedString,
     Unknown,
+    End,
     Ident,
     Expr,
     Eof,
 }
 use TokenType::*;
+
+/// Config file parser variant.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[non_exhaustive]
+pub enum Mode {
+    /// variable settings end in a newline.
+    Newline,
+    /// variable settings must be terminated with a ';'
+    Semicolon,
+    #[doc(hidden)]
+    Diablo,
+}
 
 impl TokenType {
     pub fn as_str(&self) -> &'static str {
@@ -33,6 +46,7 @@ impl TokenType {
             Word => "word",
             UnterminatedString => "[unterminated string]",
             Unknown => "[unknown]",
+            End => "'end'",
             Ident => "identifier", // alias for Word
             Expr => "expression",  // alias for Word
             Eof => "end-of-data",
@@ -70,7 +84,7 @@ pub struct Tokenizer {
     file: String,
     data: String,
     pub(crate) pos: TokenPos,
-    pub(crate) nl_token: bool,
+    pub(crate) mode: Mode,
 }
 
 #[derive(Debug, Clone)]
@@ -88,12 +102,12 @@ impl Token {
 }
 
 impl Tokenizer {
-    pub fn from_string(s: impl Into<String>, nl_is_token: bool) -> Tokenizer {
+    pub fn from_string(s: impl Into<String>, mode: Mode) -> Tokenizer {
         Tokenizer {
             file: "cfg-data".to_string(),
             data: s.into(),
             pos: TokenPos::new(),
-            nl_token: nl_is_token,
+            mode,
         }
     }
 
@@ -131,7 +145,7 @@ impl Tokenizer {
                 n += 1;
                 continue;
             }
-            if !c.is_whitespace() || (self.nl_token && start_column > 1 && c == '\n') {
+            if !c.is_whitespace() || (self.mode != Mode::Semicolon && start_column > 1 && c == '\n') {
                 break;
             }
             n += c.len_utf8();
@@ -226,25 +240,27 @@ impl Tokenizer {
             i += 1;
             n += c.len_utf8();
         }
+
         if i == 0 {
             self.update_pos(1);
-            (
+            return (
                 TokenType::Unknown,
                 Range {
                     start: offset,
                     end: offset + 1,
                 },
-            )
-        } else {
-            self.update_pos(n);
-            (
-                TokenType::Word,
-                Range {
-                    start: offset,
-                    end: offset + n,
-                },
-            )
+            );
         }
+
+        self.update_pos(n);
+        let range = Range { start: offset, end: offset + n };
+
+        // Yes, this is kind of ugly.
+        if self.mode == Mode::Diablo && &self.data[range.clone()] == "end" {
+            return (TokenType::End, range);
+        }
+
+        (TokenType::Word, range)
     }
 
     pub fn parse_token(&mut self, t: TokenType) -> (TokenType, Range) {

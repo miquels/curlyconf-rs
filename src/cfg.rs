@@ -8,18 +8,7 @@ use serde::Deserialize;
 
 use crate::de::{Deserializer, MAGIC_SECTION_NAME};
 use crate::error::Result;
-
-/// Config file parser variant.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-#[non_exhaustive]
-pub enum Mode {
-    /// variable settings end in a newline.
-    Newline,
-    /// variable settings must be terminated with a ';'
-    Semicolon,
-    #[doc(hidden)]
-    Diablo,
-}
+use crate::tokenizer::Mode;
 
 /// Read configuration from a string.
 pub fn from_str<T>(s: &str) -> Result<T>
@@ -121,10 +110,14 @@ pub trait SectionName<'de>: de::Deserializer<'de> {
     fn section_name(&self) -> Option<String>;
 }
 
-//impl<'a, 'de, T> SectionName<'de> for &'a mut T where &'a mut T: de::Deserializer<'de> {
-//impl<'a, 'de, T> SectionName<'de> for &'a T where &'a T: de::Deserializer<'de> + Copy {
 impl<'a, 'de, T> SectionName<'de> for T where T: de::Deserializer<'de> {
     fn section_name(&self) -> Option<String> {
+        //
+        // `self` is already a reference, see crate::de, where the impl is
+        // `impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer`.
+        // So &self is a reference to _that_, and we need to unref one
+        // level. If anyone knows a _safe_ solution - let me know!
+        //
         let this = unsafe { std::ptr::read(self as *const Self) };
         this.deserialize_unit_struct(MAGIC_SECTION_NAME, MyVisitor).unwrap()
     }

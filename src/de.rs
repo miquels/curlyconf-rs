@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use serde::de::{self, DeserializeSeed, IntoDeserializer, MapAccess, SeqAccess, Visitor};
 
-use crate::cfg::Mode;
+use crate::tokenizer::Mode;
 use crate::error::{Error, Result};
 use crate::parser::Parser;
 use crate::tokenizer::{Tokenizer, Token, TokenType, TokenPos};
@@ -25,7 +25,7 @@ pub const MAGIC_SECTION_NAME: &'static str = "__xyzzy_section_name__";
 
 impl Deserializer {
     pub fn from_str(s: impl Into<String>, mode: Mode, aliases: HashMap<String, String>, sections: HashSet<String>) -> Self {
-        let tokenizer = Tokenizer::from_string(s, mode != Mode::Semicolon);
+        let tokenizer = Tokenizer::from_string(s, mode);
         let parser = Parser::new(tokenizer);
         let eov = if mode == Mode::Semicolon { TokenType::Semi } else { TokenType::Nl };
         Deserializer {
@@ -305,7 +305,11 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         };
 
         // then an opening brace.
-        self.parser.expect(TokenType::LcBrace)?;
+        if self.mode == Mode::Diablo {
+            self.parser.expect(TokenType::Nl)?;
+        } else {
+            self.parser.expect(TokenType::LcBrace)?;
+        }
 
         // Give the visitor access to each entry of the map.
         let pos = self.cur_name.as_ref().map(|n| n.pos).unwrap_or(TokenPos::none());
@@ -313,7 +317,11 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         let value = visitor.visit_map(sa).map_err(|e| update_pos(e, pos))?;
 
         // Parse the closing brace of the map.
-        self.parser.expect(TokenType::RcBrace)?;
+        if self.mode == Mode::Diablo {
+            self.parser.expect(TokenType::End)?;
+        } else {
+            self.parser.expect(TokenType::RcBrace)?;
+        }
 
         // We don't expect a ';' or '\n' after this.
         self.is_closed = true;
@@ -359,7 +367,11 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
             }
 
             // then an opening brace.
-            self.parser.expect(TokenType::LcBrace)?;
+            if self.mode == Mode::Diablo {
+                self.parser.expect(TokenType::Nl)?;
+            } else {
+                self.parser.expect(TokenType::LcBrace)?;
+            }
         }
 
         // Give the visitor access to each entry of the map.
@@ -374,7 +386,11 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         log::debug!("XX level is {}", self.level);
         if self.level != 0 {
             // Parse the closing brace of the map.
-            self.parser.expect(TokenType::RcBrace)?;
+            if self.mode == Mode::Diablo {
+                self.parser.expect(TokenType::End)?;
+            } else {
+                self.parser.expect(TokenType::RcBrace)?;
+            }
         }
 
         // We don't expect a ';' or '\n' after this.
@@ -615,7 +631,12 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
             self.de.cur_name = Some(token.clone());
         }
         // Or a closing brace.
-        if lookahead.peek(TokenType::RcBrace)?.is_some() {
+        let closed = if self.de.mode == Mode::Diablo {
+            lookahead.peek(TokenType::End)?.is_some()
+        } else {
+            lookahead.peek(TokenType::RcBrace)?.is_some()
+        };
+        if closed {
             return Ok(None);
         }
         lookahead.end()?;
