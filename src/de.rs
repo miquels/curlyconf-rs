@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
-use serde::de::{self, DeserializeSeed, IntoDeserializer, MapAccess, SeqAccess, Visitor};
+use serde::de::{self, DeserializeSeed, EnumAccess, IntoDeserializer, MapAccess, SeqAccess, VariantAccess, Visitor};
 
 use crate::error::{Error, Result};
 use crate::parser::Parser;
@@ -13,7 +13,7 @@ pub struct Deserializer {
     eov: TokenType,
     level: u32,
     cur_name: Option<Token>,
-    __label__: Option<Token>,
+    struct_variant_name: Option<String>,
     is_closed: bool,
     #[allow(dead_code)] // TODO
     mode: Mode,
@@ -42,7 +42,7 @@ impl Deserializer {
             eov,
             level: 0,
             cur_name: None,
-            __label__: None,
+            struct_variant_name: None,
             is_closed: false,
             mode,
             aliases,
@@ -255,7 +255,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         V: Visitor<'de>,
     {
         // Peek ahead to see if this is a value or a section.
-        let mut lookahead = self.parser.lookahead();
+        let mut lookahead = self.parser.lookahead(3);
         let cur_name = self
             .cur_name
             .as_ref()
@@ -265,6 +265,9 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
             || lookahead.peek(TokenType::LcBrace)?.is_some()
             || lookahead
                 .peek2(TokenType::Expr, TokenType::LcBrace)?
+                .is_some()
+            || lookahead
+                .peek3(TokenType::Ident, TokenType::Expr, TokenType::LcBrace)?
                 .is_some();
         let pos = self.parser.save_pos();
 
@@ -353,19 +356,20 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     // Also if it _is_ present in the struct, we must have a label.
     fn deserialize_struct<V>(
         mut self,
-        _name: &'static str,
+        name: &'static str,
         fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        log::debug!("deserialize_struct({})", _name);
+        let _name = self.struct_variant_name.take().unwrap_or(name.to_string());
+        log::debug!("deserialize_struct({})", name);
 
         let mut label = None;
         if self.level > 0 {
             // see if it starts with a label.
-            let mut lookahead = self.parser.lookahead();
+            let mut lookahead = self.parser.lookahead(1);
             let token = lookahead.peek(TokenType::Expr)?;
             log::debug!("deserialize_struct({}): peeked: {:?}", _name, token);
             if let Some(lbl) = token {
@@ -396,6 +400,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         // Give the visitor access to each entry of the map.
         let saved_cur_name = self.cur_name.clone();
         self.level += 1;
+        println!("XXX {} {}", std::any::type_name::<V::Value>(), _name);
         let res = visitor.visit_map(SectionAccess::new(&mut self, label, Some(fields)));
         self.level -= 1;
         self.cur_name = saved_cur_name;
@@ -422,12 +427,31 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         self,
         _name: &'static str,
         _variants: &'static [&'static str],
-        _visitor: V,
+        visitor: V,
     ) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        unimplemented!()
+        let pos = self.parser.save_pos();
+        let ident = self.parser.expect(TokenType::Ident)?;
+        println!("YYY {:?}", ident);
+
+        let mut lookahead = self.parser.lookahead(2);
+
+        if let Some(_token) = lookahead.peek(TokenType::LcBrace)? {
+            // Visit a struct variant.
+            self.parser.restore_pos(pos);
+            return visitor.visit_enum(Enum::new(self, Some(ident.value)))
+        }
+
+        if let Some(_token) = lookahead.peek2(TokenType::Ident, TokenType::LcBrace)? {
+            // Visit a struct variant with label.
+            self.parser.restore_pos(pos);
+            return visitor.visit_enum(Enum::new(self, Some(ident.value)))
+        }
+
+        // Unit variant.
+        visitor.visit_enum(ident.value.into_deserializer())
     }
 
     // An identifier in Serde is the type that identifies a field of a struct or the
@@ -479,8 +503,7 @@ impl<'de, 'a> SeqAccess<'de> for ListAccess<'a> {
         T: DeserializeSeed<'de>,
     {
         if !self.first {
-            let pos = self.de.parser.save_pos();
-            let mut lookahead = self.de.parser.lookaheadnl();
+            let mut lookahead = self.de.parser.lookaheadnl(2);
 
             // Is this a comma?
             if let Some(_) = lookahead.peek(TokenType::Comma)? {
@@ -489,28 +512,27 @@ impl<'de, 'a> SeqAccess<'de> for ListAccess<'a> {
 
             // or end-of-value? (eg ';' or '\n')
             if let Some(_) = lookahead.peek(self.de.eov)? {
+
                 // See if the next section is a continuation.
+                let mut continuation = false;
                 if let Some(ref name) = self.name {
-                    lookahead.advance(&mut self.de.parser);
 
-                    let mut continuation = false;
-                    let mut lookahead = self.de.parser.lookahead();
+                    let mut lookahead2 = self.de.parser.lookaheadnl(2);
 
-                    if let Some(token) = lookahead.peek(TokenType::Ident)? {
-                        if self.de.same_section(&token, &name) {
+                    if let Some(ident) = lookahead2.peek2(self.de.eov, TokenType::Ident)? {
+                        if self.de.same_section(&ident, &name) {
                             // It is a continuation. The value name might be an
                             // alias, so update the current name. This is _only_
                             // useful for the SectionName trait.
-                            self.name = Some(token.clone());
-                            self.de.cur_name = Some(token);
+                            self.name = Some(ident.clone());
+                            self.de.cur_name = Some(ident);
+                            lookahead2.advance(&mut self.de.parser);
                             continuation = true;
-                            lookahead.advance(&mut self.de.parser);
                         }
                     }
-                    if !continuation {
-                        self.de.parser.restore_pos(pos);
-                        return Ok(None);
-                    }
+                }
+                if !continuation {
+                    return Ok(None);
                 }
             }
             lookahead.end()?;
@@ -567,7 +589,7 @@ impl<'de, 'a> SeqAccess<'de> for SectionAccess<'a> {
             // See if the next section is a continuation.
             if let Some(ref name) = self.name {
                 let mut continuation = false;
-                let mut lookahead = self.de.parser.lookahead();
+                let mut lookahead = self.de.parser.lookahead(1);
 
                 if let Some(token) = lookahead.peek(TokenType::Ident)? {
                     if self.de.same_section(&token, &name) {
@@ -627,24 +649,26 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
         }
         log::debug!("check for EOF done");
 
-        let mut lookahead = self.de.parser.lookahead();
+        let mut lookahead = self.de.parser.lookahead(1);
 
         // Expect an ident.
         let token = lookahead.peek(TokenType::Ident)?;
         if let Some(ref token) = token {
+
             // yes, we have an identifier. must be one of the struct fieldnames.
-            /*
-            let fields = self.fields.as_ref().unwrap();
-            if !fields.contains(&(token.value.as_str()))
-            {
-                // advance parser, then generate error.
-                lookahead.advance();
-                println!("XXX unknown key {:?} -- {:?}", token, fields);
-                return Err(Error::new(
-                    format!("unknown key: `{}'", token.value),
-                    token.pos,
-                ));
-            }*/
+            let fields = self._fields.as_ref().unwrap();
+            let field = token.value.as_str();
+            if !fields.contains(&field) {
+                let alias = self.de.aliases.get(field);
+                if alias.is_none() || !fields.contains(&alias.unwrap().as_str()) {
+                    // advance parser, then generate error.
+                    lookahead.advance(&mut self.de.parser);
+                    return Err(Error::new(
+                        format!("unknown field: `{}'", token.value),
+                        token.pos,
+                    ));
+                }
+            }
             log::debug!("XXX set cur_name to {}", token.value);
             self.de.cur_name = Some(token.clone());
         }
@@ -685,6 +709,78 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
         let token = self.de.parser.peek()?;
         seed.deserialize(&mut *self.de)
             .map_err(|e| update_tpos(e, &token))
+    }
+}
+
+struct Enum<'a> {
+    de: &'a mut Deserializer,
+    name: Option<String>,
+}
+
+impl<'a> Enum<'a> {
+    fn new(de: &'a mut Deserializer, name: Option<String>) -> Self {
+        println!("ZZZ name is {:?}", name);
+        Enum { de, name }
+    }
+}
+
+// `EnumAccess` is provided to the `Visitor` to give it the ability to determine
+// which variant of the enum is supposed to be deserialized.
+impl<'de, 'a> EnumAccess<'de> for Enum<'a> {
+    type Error = Error;
+    type Variant = Self;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant)>
+    where
+        V: DeserializeSeed<'de>,
+    {
+        // Get the ident, which indicates the variant.
+        let val = seed.deserialize(&mut *self.de)?;
+
+        // Then continue parsing.
+        Ok((val, self))
+    }
+}
+
+// `VariantAccess` is provided to the `Visitor` to give it the ability to see
+// the content of the single variant that it decided to deserialize.
+impl<'de, 'a> VariantAccess<'de> for Enum<'a> {
+    type Error = Error;
+
+    // If the `Visitor` expected this variant to be a unit variant, the input
+    // should have been the simple ident case handled in `deserialize_enum`.
+    fn unit_variant(self) -> Result<()> {
+        let pos = self.de.parser.save_pos();
+        Err(Error::new("expected identifier", pos))
+    }
+
+    // Newtype variants.
+    fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        seed.deserialize(self.de)
+    }
+
+    // Tuple variants.
+    fn tuple_variant<V>(self, _len: usize, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        de::Deserializer::deserialize_seq(self.de, visitor)
+    }
+
+    // Struct variants.
+    fn struct_variant<V>(
+        self,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        self.de.struct_variant_name = self.name;
+        de::Deserializer::deserialize_struct(self.de, "", fields, visitor)
     }
 }
 

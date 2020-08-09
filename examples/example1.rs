@@ -4,6 +4,9 @@ use serde::Deserialize;
 struct Config {
     peer: Vec<Peer>,
     logger: Logger,
+    color: Vec<Color>,
+    #[serde(default)]
+    either: Option<Either>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -19,6 +22,25 @@ struct Logger {
     name: String,
     target: std::net::IpAddr,
     tuple: (u32, String),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Color {
+    Red,
+    Green,
+    Blue
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Either {
+    Peer(Peer),
+    Logger(Logger),
+    Users {
+        name:   String,
+        id:     u64,
+    },
 }
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
@@ -38,6 +60,14 @@ fn main() -> Result<()> {
         peer bar {
             hostname "host2";
         }
+        color red, blue;
+        either peer baz {
+            hostname "host3";
+        }
+        #either users {
+        #    name "mikevs";
+        #    id 1000;
+        #}
 "#;
 
     let cfg2 = r#"
@@ -52,14 +82,19 @@ fn main() -> Result<()> {
             target 1.2.3.4
             tuple 10, "12"
         }
+        color blue
 "#;
 
-    match curlyconf::from_str(cfg, curlyconf::Mode::Semicolon) {
+    match curlyconf::from_str(cfg) {
         Err(e) => println!("{}", e),
         Ok(config @ Config { .. }) => println!("{:#?}", config),
     }
 
-    match curlyconf::from_str(cfg2, curlyconf::Mode::Newline) {
+    let cfg_parser = curlyconf::Builder::new()
+        .mode(curlyconf::Mode::Newline)
+        .from_str(cfg2);
+
+    match cfg_parser {
         Err(e) => println!("{}", e),
         Ok(config @ Config { .. }) => println!("{:#?}", config),
     }

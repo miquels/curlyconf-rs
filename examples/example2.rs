@@ -29,7 +29,7 @@ person snoopy {
 
 fn main() -> Result<()> {
     // Read the configuration file.
-    let config: Config = curlyconf::from_str(CFG, curlyconf::Mode::Semicolon)?;
+    let config: Config = curlyconf::from_str(CFG)?;
 
     // Print what we got (println!("{:?}", config) would be easier...).
     for (i, p) in config.person.iter().enumerate() {

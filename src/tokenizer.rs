@@ -126,11 +126,11 @@ impl Tokenizer {
         }
     }
 
-    pub fn skip_space(&self) -> usize {
+    // Skip whitespace.
+    pub fn skip_space(&self, skip_nl: bool) -> usize {
         let mut n = 0;
         let mut comment = false;
         let mut s = self.data[self.pos.offset..].chars();
-        let start_column = self.pos.column;
         while let Some(c) = s.next() {
             if comment {
                 if c == '\n' {
@@ -145,8 +145,7 @@ impl Tokenizer {
                 n += 1;
                 continue;
             }
-            if !c.is_whitespace() || (self.mode != Mode::Semicolon && start_column > 1 && c == '\n')
-            {
+            if !c.is_whitespace() || (!skip_nl && c == '\n') {
                 break;
             }
             n += c.len_utf8();
@@ -280,7 +279,7 @@ impl Tokenizer {
     }
 
     pub fn next_token(&mut self) -> Token {
-        let n = self.skip_space();
+        let n = self.skip_space(self.mode == Mode::Semicolon);
         self.update_pos(n);
         if self.pos.offset == self.data.len() {
             return Token {
@@ -312,6 +311,12 @@ impl Tokenizer {
             '\'' => self.parse_sqstring(),
             _ => self.parse_word(),
         };
+
+        // if we got a Newline token, skip all following newlines.
+        if t == TokenType::Nl {
+            let n = self.skip_space(true);
+            self.update_pos(n);
+        }
 
         Token {
             ttype: t,

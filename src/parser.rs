@@ -125,12 +125,12 @@ impl Parser {
         }
     }
 
-    pub fn lookahead(&mut self) -> Lookahead {
-        Lookahead::new(self)
+    pub fn lookahead(&mut self, how_far: usize) -> Lookahead {
+        Lookahead::new(self, how_far)
     }
 
-    pub fn lookaheadnl(&mut self) -> Lookahead {
-        Lookahead::newnl(self)
+    pub fn lookaheadnl(&mut self, how_far: usize) -> Lookahead {
+        Lookahead::newnl(self, how_far)
     }
 
     pub fn save_pos(&self) -> TokenPos {
@@ -143,113 +143,119 @@ impl Parser {
 }
 
 pub struct Lookahead {
-    token: Result<Token>,
-    token2: Result<Token>,
+    token: Vec<Result<Token>>,
     this_pos: TokenPos,
-    next_pos: TokenPos,
-    next_pos2: TokenPos,
+    next_pos: Vec<TokenPos>,
     expected: Vec<Cow<'static, str>>,
     found: bool,
 }
 
 impl Lookahead {
-    pub fn do_new(parser: &mut Parser, skipnl: bool) -> Lookahead {
+    pub fn do_new(parser: &mut Parser, depth: usize, skipnl: bool) -> Lookahead {
         let pos = parser.save_pos();
         let this_pos = pos;
-        let token = loop {
-            match parser.do_token(true) {
-                Ok(token) if token.ttype != TokenType::Nl || !skipnl => break Ok(token),
-                Err(e) => break Err(e),
-                _ => {}
-            }
-        };
-        let next_pos = parser.save_pos();
-        let token2 = loop {
-            match parser.do_token(true) {
-                Ok(token) if token.ttype != TokenType::Nl || !skipnl => break Ok(token),
-                Err(e) => break Err(e),
-                _ => {}
-            }
-        };
-        let next_pos2 = parser.save_pos();
+        let mut token = Vec::new();
+        let mut next_pos = Vec::new();
+        for _ in 0 .. depth {
+            let t = loop {
+                match parser.do_token(true) {
+                    Ok(token) if token.ttype != TokenType::Nl || !skipnl => break Ok(token),
+                    Err(e) => break Err(e),
+                    _ => {}
+                }
+            };
+            token.push(t);
+            next_pos.push(parser.save_pos());
+        }
         parser.restore_pos(pos);
 
         Lookahead {
             token,
-            token2,
             this_pos,
             next_pos,
-            next_pos2,
             expected: Vec::new(),
             found: false,
         }
     }
 
-    pub fn new(parser: &mut Parser) -> Lookahead {
-        Lookahead::do_new(parser, true)
+    pub fn new(parser: &mut Parser, how_far: usize) -> Lookahead {
+        Lookahead::do_new(parser, how_far, true)
     }
 
-    pub fn newnl(parser: &mut Parser) -> Lookahead {
-        Lookahead::do_new(parser, false)
+    pub fn newnl(parser: &mut Parser, how_far: usize) -> Lookahead {
+        Lookahead::do_new(parser, how_far, false)
     }
 
     pub fn peek(&mut self, want: TokenType) -> Result<Option<Token>> {
-        if self.found {
-            return Ok(None);
-        }
-
-        let token = self.token.clone()?;
-        let t = self.do_peek(token, want);
-        if t.is_none() {
-            self.expected.push(Cow::Borrowed(want.as_str()));
-        }
-        Ok(t)
+        self.peekx(&[want])
     }
 
     pub fn peek2(&mut self, want1: TokenType, want2: TokenType) -> Result<Option<Token>> {
+        self.peekx(&[want1, want2])
+    }
+
+    pub fn peek3(&mut self, want1: TokenType, want2: TokenType, want3: TokenType) -> Result<Option<Token>> {
+        self.peekx(&[want1, want2, want3])
+    }
+
+    fn peekx(&mut self, want: &[TokenType]) -> Result<Option<Token>> {
         if self.found {
             return Ok(None);
         }
+        let mut found = true;
+        let mut tokens = std::collections::VecDeque::new();
 
-        let token1 = self.token.clone()?;
-        if let Some(t1) = self.do_peek(token1, want1) {
-            if let Ok(token2) = self.token2.clone() {
-                if let Some(t2) = self.do_peek(token2, want2) {
-                    // We have a match.
-                    self.next_pos = self.next_pos2;
-                    // If the first token is a word/ident/expr, return that,
-                    // otherwise return the second token.
-                    match t1.ttype {
-                        TokenType::Word | TokenType::Ident | TokenType::Expr => {
-                            return Ok(Some(t1));
-                        }
-                        _ => return Ok(Some(t2)),
+        for i in 0 .. want.len() {
+            match self.token[i] {
+                Ok(ref t) => {
+                    let t = t.clone();
+                    if let Some(t) = self.compare(t, &want[i]) {
+                        tokens.push_back(t);
+                    } else {
+                        found = false;
+                        break;
                     }
+                },
+                Err(ref e) => {
+                    if i == 0 {
+                        return Err(e.clone());
+                    }
+                    found = false;
+                    break;
                 }
             }
         }
 
-        let want_str = format!("{} {}", want1.as_str(), want2.as_str());
+        if found {
+            self.found = true;
+            self.next_pos[0] = self.next_pos[tokens.len() - 1];
+            loop {
+                let token = tokens.pop_front().unwrap();
+                let t = token.ttype;
+                if tokens.len() == 0 || t == TokenType::Word || t == TokenType::Ident || t == TokenType::Expr {
+                    return Ok(Some(token));
+                }
+            }
+        }
+
+        let want_str = want.iter().map(|t| t.as_str()).collect::<Vec<_>>().join(" ");
         self.expected.push(Cow::Owned(want_str));
         Ok(None)
     }
 
-    fn do_peek(&mut self, mut token: Token, want: TokenType) -> Option<Token> {
+    fn compare(&mut self, mut token: Token, want: &TokenType) -> Option<Token> {
         if token.ttype == TokenType::Word {
-            if want == TokenType::Ident && is_ident(&mut token) {
-                self.found = true;
+            if want == &TokenType::Ident && is_ident(&mut token) {
                 log::debug!("+-- found {:?}", token);
                 return Some(token);
             }
-            if want == TokenType::Expr && is_expr(&mut token) {
-                self.found = true;
+            if want == &TokenType::Expr && is_expr(&mut token) {
                 log::debug!("+-- found {:?}", token);
                 return Some(token);
             }
         }
 
-        if want == token.ttype {
-            self.found = true;
+        if want == &token.ttype {
             log::debug!("+-- found {:?}", token);
             return Some(token);
         }
@@ -261,13 +267,11 @@ impl Lookahead {
 
     pub fn advance(&mut self, parser: &mut Parser) {
         log::debug!("lookahead::advance: to {:?}", self.next_pos);
-        parser.restore_pos(self.next_pos);
-        self.expected.clear();
-        self.found = false;
+        parser.restore_pos(self.next_pos[0]);
     }
 
     pub fn end(&mut self) -> Result<()> {
-        if self.expected.len() == 0 {
+        if self.found {
             return Ok(());
         }
         let last = if self.expected.len() > 1 {

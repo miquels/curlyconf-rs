@@ -46,7 +46,7 @@ type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
 fn main() -> Result<()> {
     // Read the configuration file.
-    let config: Config = curlyconf::from_file("file.cfg", curlyconf::Mode::Semicolon)?;
+    let config: Config = curlyconf::from_file("file.cfg");
 
     // Print what we got (println!("{:?}", config) would be easier...).
     for (i, p) in config.person.iter().enumerate() {
