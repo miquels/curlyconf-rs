@@ -111,22 +111,32 @@ impl Builder {
     }
 }
 
-/// Helper trait to get at the current section name.
+/// Helper trait to access the state of the parser.
 ///
 /// Automatically implemented for everything that implements `Deserialize`.
-pub trait SectionName<'de>: de::Deserializer<'de> {
-    /// Get the current section name.
-    fn section_name(&self) -> String;
-}
-
-impl<'a, 'de, T> SectionName<'de> for T
-where
-    T: de::Deserializer<'de>,
-{
-    fn section_name(&self) -> String {
+pub trait ParserAccess {
+    /// Get the name of the value that's currently being parsed.
+    ///
+    /// Useful in `Deserialize` implementations. You can have one field
+    /// with several aliases (see `Builder::alias`) and differentiate
+    /// the action in `Deserialize::deserialize` based on which alias it is.
+    ///
+    /// For example, a `groups: Vec<String>` value, with `addgroup` and
+    /// `delgroup` aliases.
+    fn value_name(&self) -> String {
         SECTION_CTX.with(|ctx| ctx.borrow().subsection_name().to_string())
     }
+
+    /// Get a direct reference to the parser instead of via the Deserializer handle.
+    fn parser(&self) -> Parser {
+        Parser
+    }
 }
+
+impl<'de, T> ParserAccess for T where T: de::Deserializer<'de> {}
+
+pub struct Parser;
+impl ParserAccess for Parser {}
 
 #[cfg(test)]
 mod tests {

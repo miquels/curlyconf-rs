@@ -71,7 +71,7 @@ impl SectionCtx {
     }
 }
 
-pub struct Deserializer {
+pub(crate) struct Deserializer {
     parser: Parser,
     eov: TokenType,
     ctx: SectionCtx,
@@ -150,8 +150,23 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     where
         V: Visitor<'de>,
     {
-        let (pos, value) = self.parse_expr("boolean")?;
-        visitor.visit_bool(value).map_err(|e| update_pos(e, pos))
+        let mut lookahead = self.parser.lookaheadnl(1);
+
+        // No argument means "true".
+        // So "enable-warp;" is the same as "enable-warp yes;".
+        if let Some(token) = lookahead.peek(self.eov)? {
+            return visitor.visit_bool(true).map_err(|e| update_pos(e, token.pos));
+        }
+        if let Some(token) = lookahead.peek(TokenType::Expr)? {
+            lookahead.advance(&mut self.parser);
+            let v = match token.value.as_str() {
+                "y"|"yes"|"t"|"true"|"on"|"1" => true,
+                "n"|"no"|"f"|"false"|"off"|"0" => false,
+                _ => return Err(Error::new(format!("expected boolean"), token.pos)),
+            };
+            return visitor.visit_bool(v).map_err(|e| update_pos(e, token.pos));
+        }
+        lookahead.error()
     }
 
     // The `parse_expr` function is generic over the type `T` so here
@@ -726,7 +741,7 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
             return seed.deserialize(name.into_deserializer()).map(Some);
         }
 
-        Err(lookahead.end().unwrap_err())
+        lookahead.error()
     }
 
     fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value>

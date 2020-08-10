@@ -130,7 +130,11 @@ impl Parser {
     }
 
     pub fn lookaheadnl(&mut self, how_far: usize) -> Lookahead {
-        Lookahead::newnl(self, how_far)
+        if self.tokenizer.mode == Mode::Semicolon {
+            Lookahead::new(self, how_far)
+        } else {
+            Lookahead::newnl(self, how_far)
+        }
     }
 
     pub fn save_pos(&self) -> TokenPos {
@@ -151,7 +155,7 @@ pub struct Lookahead {
 }
 
 impl Lookahead {
-    pub fn do_new(parser: &mut Parser, depth: usize, skipnl: bool) -> Lookahead {
+    fn do_new(parser: &mut Parser, depth: usize, skipnl: bool) -> Lookahead {
         let pos = parser.save_pos();
         let this_pos = pos;
         let mut token = Vec::new();
@@ -178,11 +182,11 @@ impl Lookahead {
         }
     }
 
-    pub fn new(parser: &mut Parser, how_far: usize) -> Lookahead {
+    pub(crate) fn new(parser: &mut Parser, how_far: usize) -> Lookahead {
         Lookahead::do_new(parser, how_far, true)
     }
 
-    pub fn newnl(parser: &mut Parser, how_far: usize) -> Lookahead {
+    pub(crate) fn newnl(parser: &mut Parser, how_far: usize) -> Lookahead {
         Lookahead::do_new(parser, how_far, false)
     }
 
@@ -297,6 +301,10 @@ impl Lookahead {
             msg += &format!(" or {}", last);
         }
         Err(Error::new(msg, self.this_pos))
+    }
+
+    pub fn error<T>(&mut self) -> Result<T> {
+        Err(self.end().unwrap_err())
     }
 }
 
