@@ -386,33 +386,11 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     {
         log::debug!("deserialize_map");
 
-        // see if it starts with a label.
-        let label = match self.parser.peek()? {
-            Some(token) if token.ttype == TokenType::Word => {
-                Some(self.parser.expect(TokenType::Word)?)
-            }
-            _ => None,
-        };
-
-        // then an opening brace.
-        if self.mode == Mode::Diablo {
-            self.parser.expect(TokenType::Nl)?;
-        } else {
-            self.parser.expect(TokenType::LcBrace)?;
-        }
-
         // Give the visitor access to each entry of the map.
-        let sa = SectionAccess::new(&mut self, label.map(|t| t.value), None);
+        let hma = HashMapAccess::new(&mut self);
         let value = visitor
-            .visit_map(sa)
+            .visit_map(hma)
             .map_err(|e| update_pos(e, self.ctx.subsection_pos()))?;
-
-        // Parse the closing brace of the map.
-        if self.mode == Mode::Diablo {
-            self.parser.expect(TokenType::End)?;
-        } else {
-            self.parser.expect(TokenType::RcBrace)?;
-        }
 
         // We don't expect a ';' or '\n' after this.
         self.is_closed = true;
@@ -682,6 +660,7 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
 
         // if the struct has a __label__ field, insert field name (once!)
         if self.first && self.label.is_some() {
+            log::debug!("SectionAccess::MapAccess::next_key_seed: insert label {:?}", self.label);
             let de = "__label__".into_deserializer();
             return seed.deserialize(de).map(Some);
         }
@@ -701,20 +680,33 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
         }
         log::debug!("check for EOF done");
 
+        // Check for a continuation.
+        let mut continuation = false;
+        let mut lookahead = self.de.parser.lookaheadnl(2);
+        if let Some(ident) = lookahead.peek2(self.de.eov, TokenType::Ident)? {
+            if self.de.current_section(&ident) {
+                lookahead.advance(&mut self.de.parser);
+                continuation = true;
+            }
+        }
+
         let mut lookahead = self.de.parser.lookahead(1);
 
-        // Check if it's the end of the section.
-        let closed = if self.de.mode == Mode::Diablo {
-            lookahead.peek(TokenType::End)?.is_some()
-        } else {
-            lookahead.peek(TokenType::RcBrace)?.is_some()
-        };
-        if closed {
-            return Ok(None);
+        if !continuation {
+            // Check if it's the end of the section.
+            let closed = if self.de.mode == Mode::Diablo {
+                lookahead.peek(TokenType::End)?.is_some()
+            } else {
+                lookahead.peek(TokenType::RcBrace)?.is_some()
+            };
+            if closed {
+                return Ok(None);
+            }
         }
 
         // No, so expect an ident.
         if let Some(token) = lookahead.peek(TokenType::Ident)? {
+            log::debug!("next_key_seed: key {:?}", token);
             lookahead.advance(&mut self.de.parser);
 
             // First resolve this field name - might be an alias.
@@ -758,6 +750,91 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
             let de = label.into_deserializer();
             return seed.deserialize(de);
         }
+
+        // Deserialize a map value.
+        self.de.is_closed = false;
+        let token = self.de.parser.peek()?;
+        seed.deserialize(&mut *self.de)
+            .map_err(|e| update_tpos(e, &token))
+    }
+}
+
+struct HashMapAccess<'a> {
+    de: &'a mut Deserializer,
+    first: bool,
+}
+
+impl<'a> HashMapAccess<'a> {
+    fn new(
+        de: &'a mut Deserializer,
+    ) -> Self {
+        log::debug!("HashMapAccess::new");
+        HashMapAccess {
+            de,
+            first: true,
+        }
+    }
+}
+
+// This handles the ';' or '\n' separated key/value fields of a hashmap.
+impl<'de, 'a> MapAccess<'de> for HashMapAccess<'a> {
+    type Error = Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>>
+    where
+        K: DeserializeSeed<'de>,
+    {
+        log::debug!("HashMapAccess::MapAccess::next_key_seed");
+
+        if !self.first {
+            // Check for a continuation.
+            let mut continuation = false;
+
+            let mut lookahead = self.de.parser.lookaheadnl(2);
+            if self.de.is_closed {
+                if let Some(ident) = lookahead.peek(TokenType::Ident)? {
+                    if self.de.current_section(&ident) {
+                        lookahead.advance(&mut self.de.parser);
+                        continuation = true;
+                    }
+                }
+            } else {
+                if let Some(ident) = lookahead.peek2(self.de.eov, TokenType::Ident)? {
+                    if self.de.current_section(&ident) {
+                        lookahead.advance(&mut self.de.parser);
+                        continuation = true;
+                    }
+                }
+            }
+
+            if !continuation {
+                if !self.de.is_closed {
+                    // end-of-value is required after a value.
+                    self.de.parser.expect(self.de.eov)?;
+                }
+                return Ok(None);
+            }
+        }
+        self.first = false;
+
+        let mut lookahead = self.de.parser.lookaheadnl(2);
+        let ttype = if self.de.mode == Mode::Diablo { TokenType::Nl } else { TokenType::LcBrace };
+        if let Some(label) = lookahead.peek2(TokenType::Expr, ttype)? {
+            // it's a section. do not eat the label.
+            return seed.deserialize(label.value.into_deserializer()).map(Some);
+        }
+
+        seed.deserialize(&mut *self.de).map(Some)
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value>
+    where
+        V: DeserializeSeed<'de>,
+    {
+        log::debug!(
+            "HashMapAccess::MapAccess::next_value_seed {}",
+            std::any::type_name::<V::Value>()
+        );
 
         // Deserialize a map value.
         self.de.is_closed = false;
