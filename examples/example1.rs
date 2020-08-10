@@ -29,7 +29,7 @@ struct Logger {
 enum Color {
     Red,
     Green,
-    Blue
+    Blue,
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,10 +37,7 @@ enum Color {
 enum Either {
     Peer(Peer),
     Logger(Logger),
-    Users {
-        name:   String,
-        id:     u64,
-    },
+    Users { name: String, id: u64 },
 }
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;

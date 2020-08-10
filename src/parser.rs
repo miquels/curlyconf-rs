@@ -156,7 +156,7 @@ impl Lookahead {
         let this_pos = pos;
         let mut token = Vec::new();
         let mut next_pos = Vec::new();
-        for _ in 0 .. depth {
+        for _ in 0..depth {
             let t = loop {
                 match parser.do_token(true) {
                     Ok(token) if token.ttype != TokenType::Nl || !skipnl => break Ok(token),
@@ -194,7 +194,12 @@ impl Lookahead {
         self.peekx(&[want1, want2])
     }
 
-    pub fn peek3(&mut self, want1: TokenType, want2: TokenType, want3: TokenType) -> Result<Option<Token>> {
+    pub fn peek3(
+        &mut self,
+        want1: TokenType,
+        want2: TokenType,
+        want3: TokenType,
+    ) -> Result<Option<Token>> {
         self.peekx(&[want1, want2, want3])
     }
 
@@ -205,7 +210,7 @@ impl Lookahead {
         let mut found = true;
         let mut tokens = std::collections::VecDeque::new();
 
-        for i in 0 .. want.len() {
+        for i in 0..want.len() {
             match self.token[i] {
                 Ok(ref t) => {
                     let t = t.clone();
@@ -215,7 +220,7 @@ impl Lookahead {
                         found = false;
                         break;
                     }
-                },
+                }
                 Err(ref e) => {
                     if i == 0 {
                         return Err(e.clone());
@@ -232,13 +237,21 @@ impl Lookahead {
             loop {
                 let token = tokens.pop_front().unwrap();
                 let t = token.ttype;
-                if tokens.len() == 0 || t == TokenType::Word || t == TokenType::Ident || t == TokenType::Expr {
+                if tokens.len() == 0
+                    || t == TokenType::Word
+                    || t == TokenType::Ident
+                    || t == TokenType::Expr
+                {
                     return Ok(Some(token));
                 }
             }
         }
 
-        let want_str = want.iter().map(|t| t.as_str()).collect::<Vec<_>>().join(" ");
+        let want_str = want
+            .iter()
+            .map(|t| t.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
         self.expected.push(Cow::Owned(want_str));
         Ok(None)
     }

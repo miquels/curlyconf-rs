@@ -2,7 +2,10 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
-use serde::de::{self, DeserializeSeed, EnumAccess, IntoDeserializer, MapAccess, SeqAccess, VariantAccess, Visitor};
+use serde::de::{
+    self, DeserializeSeed, EnumAccess, IntoDeserializer, MapAccess, SeqAccess, VariantAccess,
+    Visitor,
+};
 
 use crate::error::{Error, Result};
 use crate::parser::Parser;
@@ -24,7 +27,7 @@ impl SectionCtx {
     // Initial value.
     fn empty() -> SectionCtx {
         SectionCtx {
-            token:  Token::new(TokenType::Unknown, "", TokenPos::none()),
+            token: Token::new(TokenType::Unknown, "", TokenPos::none()),
             typename: "",
             level: 0,
         }
@@ -76,6 +79,7 @@ pub struct Deserializer {
     #[allow(dead_code)] // TODO
     mode: Mode,
     aliases: HashMap<String, String>,
+    ignored: HashSet<String>,
     sections: HashSet<String>,
 }
 
@@ -84,6 +88,7 @@ impl Deserializer {
         s: impl Into<String>,
         mode: Mode,
         aliases: HashMap<String, String>,
+        ignored: HashSet<String>,
         sections: HashSet<String>,
     ) -> Self {
         let tokenizer = Tokenizer::from_string(s, mode);
@@ -100,6 +105,7 @@ impl Deserializer {
             is_closed: false,
             mode,
             aliases,
+            ignored,
             sections,
         }
     }
@@ -120,7 +126,11 @@ impl Deserializer {
         let v1 = format!("{}.{}", self.ctx.section_type(), t1.value);
         let v2 = format!("{}.{}", self.ctx.section_type(), self.ctx.subsection_name());
         let t1 = self.aliases.get(&v1).unwrap_or(&t1.value);
-        let t2 = self.aliases.get(&v2).map(|s| s.as_str()).unwrap_or(self.ctx.subsection_name());
+        let t2 = self
+            .aliases
+            .get(&v2)
+            .map(|s| s.as_str())
+            .unwrap_or(self.ctx.subsection_name());
         t1 == t2
     }
 }
@@ -276,11 +286,11 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     }
 
     // In Serde, unit means an anonymous value containing no data.
-    fn deserialize_unit<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        unimplemented!()
+        visitor.visit_unit()
     }
 
     // Unit struct means a named value containing no data.
@@ -378,7 +388,9 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
 
         // Give the visitor access to each entry of the map.
         let sa = SectionAccess::new(&mut self, label.map(|t| t.value), None);
-        let value = visitor.visit_map(sa).map_err(|e| update_pos(e, self.ctx.subsection_pos()))?;
+        let value = visitor
+            .visit_map(sa)
+            .map_err(|e| update_pos(e, self.ctx.subsection_pos()))?;
 
         // Parse the closing brace of the map.
         if self.mode == Mode::Diablo {
@@ -477,13 +489,13 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         if let Some(_token) = lookahead.peek(TokenType::LcBrace)? {
             // Visit a struct variant.
             self.parser.restore_pos(pos);
-            return visitor.visit_enum(Enum::new(self))
+            return visitor.visit_enum(Enum::new(self));
         }
 
         if let Some(_token) = lookahead.peek2(TokenType::Ident, TokenType::LcBrace)? {
             // Visit a struct variant with label.
             self.parser.restore_pos(pos);
-            return visitor.visit_enum(Enum::new(self))
+            return visitor.visit_enum(Enum::new(self));
         }
 
         // Unit variant.
@@ -500,15 +512,18 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     }
 
     // We don't support this.
-    fn deserialize_ignored_any<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        let word = self.parser.expect(TokenType::Word)?;
-        Err(Error::new(
-            format!("BUG: serde called deserialize_ignored_any for {:?}", word),
-            word.pos,
-        ))
+        loop {
+            let mut lookahead = self.parser.lookaheadnl(1);
+            if lookahead.peek(self.eov)?.is_some() {
+                break;
+            }
+            lookahead.advance(&mut self.parser);
+        }
+        self.deserialize_unit(visitor)
     }
 }
 
@@ -520,10 +535,7 @@ struct ListAccess<'a> {
 
 impl<'a> ListAccess<'a> {
     fn new(de: &'a mut Deserializer) -> Self {
-        ListAccess {
-            de,
-            first: true,
-        }
+        ListAccess { de, first: true }
     }
 }
 
@@ -546,7 +558,6 @@ impl<'de, 'a> SeqAccess<'de> for ListAccess<'a> {
 
             // or end-of-value? (eg ';' or '\n')
             if let Some(_) = lookahead.peek(self.de.eov)? {
-
                 // See if the next section is a continuation.
                 let mut continuation = false;
 
@@ -693,13 +704,16 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
 
             // First resolve this field name - might be an alias.
             let type_dot_field = format!("{}.{}", self.de.ctx.section_type(), token.value);
-            let name = self.de.aliases.get(&type_dot_field)
+            let name = self
+                .de
+                .aliases
+                .get(&type_dot_field)
                 .map(|s| s.as_str())
                 .unwrap_or(token.value.as_str());
 
             // now see if it matches one of the struct's field names.
             let fields = self.fields.as_ref().unwrap();
-            if !fields.contains(&name) {
+            if !fields.contains(&name) && !self.de.ignored.contains(&type_dot_field) {
                 return Err(Error::new(
                     format!("unknown field: `{}'", token.value),
                     token.pos,
@@ -795,11 +809,7 @@ impl<'de, 'a> VariantAccess<'de> for Enum<'a> {
     }
 
     // Struct variants.
-    fn struct_variant<V>(
-        self,
-        fields: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value>
+    fn struct_variant<V>(self, fields: &'static [&'static str], visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {

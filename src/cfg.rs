@@ -25,46 +25,72 @@ where
     Builder::new().from_file(name)
 }
 
+/// Configuration builder.
 pub struct Builder {
     mode: Mode,
     aliases: HashMap<String, String>,
+    ignored: HashSet<String>,
     sections: HashSet<String>,
 }
 
 impl Builder {
+    /// Return a new configuration builder.
     pub fn new() -> Builder {
         Builder {
             mode: Mode::Semicolon,
             aliases: HashMap::new(),
+            ignored: HashSet::new(),
             sections: HashSet::new(),
         }
     }
 
+    /// Set the mode of this configuration file parser:
+    /// - Mode::Semicolon: values must end in `;'
+    /// - Mode::Newline: values end with a newline.
     pub fn mode(mut self, mode: Mode) -> Builder {
         self.mode = mode;
         self
     }
 
+    /// Add an alias for a section name or value name.
+    ///
+    /// This is much like the `#[serde(alias = "foo")]` attribute, but since we
+    /// need to know what aliases exist, and serde does not provide that
+    /// information, we need to implement the aliasing ourself.
     pub fn alias<T>(mut self, alias: &str, section_name: &str) -> Builder {
         let type_name = std::any::type_name::<T>().split(":").last().unwrap();
         let type_dot_alias = format!("{}.{}", type_name, alias);
-        self.aliases.insert(type_dot_alias, section_name.to_string());
+        self.aliases
+            .insert(type_dot_alias, section_name.to_string());
         self
     }
 
+    /// Ignore a value.
+    pub fn ignore<T>(mut self, key: &str) -> Builder {
+        let type_name = std::any::type_name::<T>().split(":").last().unwrap();
+        let type_dot_alias = format!("{}.{}", type_name, key);
+        self.ignored.insert(type_dot_alias);
+        self
+    }
+
+    // Only used with Mode::Diablo, and we hide that.
+    #[doc(hidden)]
     pub fn section(mut self, section_name: impl Into<String>) -> Builder {
         self.sections.insert(section_name.into());
         self
     }
 
+    /// This concludes the building phase and reads the configuration from a string.
     pub fn from_str<T>(self, text: &str) -> Result<T>
     where
         T: for<'de> Deserialize<'de>,
     {
-        let mut deserializer = Deserializer::from_str(text, self.mode, self.aliases, self.sections);
+        let mut deserializer =
+            Deserializer::from_str(text, self.mode, self.aliases, self.ignored, self.sections);
         T::deserialize(&mut deserializer)
     }
 
+    /// This concludes the building phase and reads the configuration from a file.
     pub fn from_file<T>(self, name: impl Into<String>) -> io::Result<T>
     where
         T: for<'de> Deserialize<'de>,
@@ -74,7 +100,8 @@ impl Builder {
             fs::read(&name).map_err(|e| IoError::new(e.kind(), format!("{}: {}", name, e)))?;
         let text = String::from_utf8(data)
             .map_err(|_| IoError::new(Kind::Other, format!("{}: utf-8 error", name)))?;
-        let mut deserializer = Deserializer::from_str(text, self.mode, self.aliases, self.sections);
+        let mut deserializer =
+            Deserializer::from_str(text, self.mode, self.aliases, self.ignored, self.sections);
         T::deserialize(&mut deserializer)
             .map_err(|mut e| {
                 e.file_name = name;
@@ -97,9 +124,7 @@ where
     T: de::Deserializer<'de>,
 {
     fn section_name(&self) -> String {
-        SECTION_CTX.with(|ctx| {
-            ctx.borrow().subsection_name().to_string()
-        })
+        SECTION_CTX.with(|ctx| ctx.borrow().subsection_name().to_string())
     }
 }
 

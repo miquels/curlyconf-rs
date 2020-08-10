@@ -5,6 +5,7 @@ use crate::tokenizer::TokenPos;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// Generic error returned by the configuration parser.
 #[derive(Clone, Debug)]
 pub struct Error {
     pub pos: TokenPos,
