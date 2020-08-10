@@ -332,13 +332,6 @@ impl Tokenizer {
     pub fn restore_pos(&mut self, pos: TokenPos) {
         self.pos = pos;
     }
-
-    pub fn peek(&mut self) -> Token {
-        let pos = self.save_pos();
-        let token = self.next_token();
-        self.restore_pos(pos);
-        token
-    }
 }
 
 fn expand_string(dq: bool, s: &str) -> String {

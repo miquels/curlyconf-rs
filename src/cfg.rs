@@ -1,12 +1,11 @@
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 use std::fs;
 use std::io::{self, Error as IoError, ErrorKind as Kind};
 
-use serde::de::{self, Visitor};
+use serde::de;
 use serde::Deserialize;
 
-use crate::de::{Deserializer, MAGIC_SECTION_NAME};
+use crate::de::{Deserializer, SECTION_CTX};
 use crate::error::Result;
 use crate::tokenizer::Mode;
 
@@ -46,8 +45,10 @@ impl Builder {
         self
     }
 
-    pub fn alias(mut self, alias: impl Into<String>, section_name: impl Into<String>) -> Builder {
-        self.aliases.insert(alias.into(), section_name.into());
+    pub fn alias<T>(mut self, alias: &str, section_name: &str) -> Builder {
+        let type_name = std::any::type_name::<T>().split(":").last().unwrap();
+        let type_dot_alias = format!("{}.{}", type_name, alias);
+        self.aliases.insert(type_dot_alias, section_name.to_string());
         self
     }
 
@@ -83,50 +84,22 @@ impl Builder {
     }
 }
 
-// We need a "backdoor" into our Deserializer. It would be great if
-// there was a "custom" method we could call, but alas. So we abuse
-// the deserialize_unit_struct method. If it gets passed a magic `name`,
-// then it calls visitor.visit_str(cur_name).
-struct MyVisitor;
-
-impl<'de> Visitor<'de> for MyVisitor {
-    type Value = Option<String>;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("nothing")
-    }
-
-    // Only used to pass a string back.
-    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(if v != "" { Some(v.to_string()) } else { None })
-    }
-}
-
 /// Helper trait to get at the current section name.
 ///
 /// Automatically implemented for everything that implements `Deserialize`.
 pub trait SectionName<'de>: de::Deserializer<'de> {
     /// Get the current section name.
-    fn section_name(&self) -> Option<String>;
+    fn section_name(&self) -> String;
 }
 
 impl<'a, 'de, T> SectionName<'de> for T
 where
     T: de::Deserializer<'de>,
 {
-    fn section_name(&self) -> Option<String> {
-        //
-        // `self` is already a reference, see crate::de, where the impl is
-        // `impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer`.
-        // So &self is a reference to _that_, and we need to unref one
-        // level. If anyone knows a _safe_ solution - let me know!
-        //
-        let this = unsafe { std::ptr::read(self as *const Self) };
-        this.deserialize_unit_struct(MAGIC_SECTION_NAME, MyVisitor)
-            .unwrap()
+    fn section_name(&self) -> String {
+        SECTION_CTX.with(|ctx| {
+            ctx.borrow().subsection_name().to_string()
+        })
     }
 }
 

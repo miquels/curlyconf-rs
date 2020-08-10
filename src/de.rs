@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
@@ -8,20 +9,75 @@ use crate::parser::Parser;
 use crate::tokenizer::Mode;
 use crate::tokenizer::{Token, TokenPos, TokenType, Tokenizer};
 
+// We always save a current copy of the section context as a thread local value.
+thread_local!(pub(crate) static SECTION_CTX: RefCell<SectionCtx> = RefCell::new(SectionCtx::empty()));
+
+// Info about the section we're processing.
+#[derive(Debug, Clone)]
+pub(crate) struct SectionCtx {
+    token: Token,
+    typename: &'static str,
+    level: u32,
+}
+
+impl SectionCtx {
+    // Initial value.
+    fn empty() -> SectionCtx {
+        SectionCtx {
+            token:  Token::new(TokenType::Unknown, "", TokenPos::none()),
+            typename: "",
+            level: 0,
+        }
+    }
+
+    // Enter a new section. returns the old section.
+    fn new<T>(&mut self) -> SectionCtx {
+        let this = self.clone();
+        self.token = Token::new(TokenType::Unknown, "", TokenPos::none());
+        self.typename = std::any::type_name::<T>().split(":").last().unwrap();
+        self.level += 1;
+        SECTION_CTX.with(|ctx| *ctx.borrow_mut() = self.clone());
+        this
+    }
+
+    // Restore old section.
+    fn restore(&mut self, scx: SectionCtx) {
+        *self = scx;
+        SECTION_CTX.with(|ctx| *ctx.borrow_mut() = self.clone());
+    }
+
+    // Update the section token (name and position).
+    fn update_section_token(&mut self, section_token: Token) {
+        self.token = section_token;
+        SECTION_CTX.with(|ctx| *ctx.borrow_mut() = self.clone());
+    }
+
+    // Return the type name of the current section.
+    pub fn section_type(&self) -> &'static str {
+        self.typename
+    }
+
+    // Return the subsection name (aka struct field) we're processing right now.
+    pub fn subsection_name(&self) -> &str {
+        self.token.value.as_str()
+    }
+
+    // Position.
+    fn subsection_pos(&self) -> TokenPos {
+        self.token.pos
+    }
+}
+
 pub struct Deserializer {
     parser: Parser,
     eov: TokenType,
-    level: u32,
-    cur_name: Option<Token>,
-    struct_variant_name: Option<String>,
+    ctx: SectionCtx,
     is_closed: bool,
     #[allow(dead_code)] // TODO
     mode: Mode,
     aliases: HashMap<String, String>,
     sections: HashSet<String>,
 }
-
-pub const MAGIC_SECTION_NAME: &'static str = "__xyzzy_section_name__";
 
 impl Deserializer {
     pub fn from_str(
@@ -40,9 +96,7 @@ impl Deserializer {
         Deserializer {
             parser,
             eov,
-            level: 0,
-            cur_name: None,
-            struct_variant_name: None,
+            ctx: SectionCtx::empty(),
             is_closed: false,
             mode,
             aliases,
@@ -62,9 +116,11 @@ impl Deserializer {
         Ok((word.pos, value))
     }
 
-    fn same_section(&self, t1: &Token, t2: &Token) -> bool {
-        let t1 = self.aliases.get(&t1.value).unwrap_or(&t1.value);
-        let t2 = self.aliases.get(&t2.value).unwrap_or(&t2.value);
+    fn current_section(&self, t1: &Token) -> bool {
+        let v1 = format!("{}.{}", self.ctx.section_type(), t1.value);
+        let v2 = format!("{}.{}", self.ctx.section_type(), self.ctx.subsection_name());
+        let t1 = self.aliases.get(&v1).unwrap_or(&t1.value);
+        let t2 = self.aliases.get(&v2).map(|s| s.as_str()).unwrap_or(self.ctx.subsection_name());
         t1 == t2
     }
 }
@@ -228,14 +284,10 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     }
 
     // Unit struct means a named value containing no data.
-    fn deserialize_unit_struct<V>(self, name: &'static str, visitor: V) -> Result<V::Value>
+    fn deserialize_unit_struct<V>(self, _name: &'static str, _visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        if name == MAGIC_SECTION_NAME {
-            let cur_name = self.cur_name.as_ref().map(|s| s.value.as_str());
-            return visitor.visit_str(cur_name.unwrap_or(""));
-        }
         unimplemented!()
     }
 
@@ -256,12 +308,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     {
         // Peek ahead to see if this is a value or a section.
         let mut lookahead = self.parser.lookahead(3);
-        let cur_name = self
-            .cur_name
-            .as_ref()
-            .map(|s| s.value.as_str())
-            .unwrap_or("");
-        let is_section = self.sections.contains(cur_name)
+        let is_section = self.sections.contains(self.ctx.subsection_name())
             || lookahead.peek(TokenType::LcBrace)?.is_some()
             || lookahead
                 .peek2(TokenType::Expr, TokenType::LcBrace)?
@@ -330,13 +377,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         }
 
         // Give the visitor access to each entry of the map.
-        let pos = self
-            .cur_name
-            .as_ref()
-            .map(|n| n.pos)
-            .unwrap_or(TokenPos::none());
         let sa = SectionAccess::new(&mut self, label.map(|t| t.value), None);
-        let value = visitor.visit_map(sa).map_err(|e| update_pos(e, pos))?;
+        let value = visitor.visit_map(sa).map_err(|e| update_pos(e, self.ctx.subsection_pos()))?;
 
         // Parse the closing brace of the map.
         if self.mode == Mode::Diablo {
@@ -356,18 +398,17 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     // Also if it _is_ present in the struct, we must have a label.
     fn deserialize_struct<V>(
         mut self,
-        name: &'static str,
+        _name: &'static str,
         fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        let _name = self.struct_variant_name.take().unwrap_or(name.to_string());
-        log::debug!("deserialize_struct({})", name);
+        log::debug!("deserialize_struct({})", _name);
 
         let mut label = None;
-        if self.level > 0 {
+        if self.ctx.level > 0 {
             // see if it starts with a label.
             let mut lookahead = self.parser.lookahead(1);
             let token = lookahead.peek(TokenType::Expr)?;
@@ -398,17 +439,13 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         }
 
         // Give the visitor access to each entry of the map.
-        let saved_cur_name = self.cur_name.clone();
-        self.level += 1;
-        println!("XXX {} {}", std::any::type_name::<V::Value>(), _name);
+        let saved_context = self.ctx.new::<V::Value>();
         let res = visitor.visit_map(SectionAccess::new(&mut self, label, Some(fields)));
-        self.level -= 1;
-        self.cur_name = saved_cur_name;
-        log::debug!("XXX reset cur_name to {:?}", self.cur_name);
-        let value = res.map_err(|e| update_tpos(e, &self.cur_name))?;
+        self.ctx.restore(saved_context);
+        let value = res.map_err(|e| update_pos(e, self.ctx.subsection_pos()))?;
 
-        log::debug!("XX level is {}", self.level);
-        if self.level != 0 {
+        log::debug!("XX level is {}", self.ctx.level);
+        if self.ctx.level != 0 {
             // Parse the closing brace of the map.
             if self.mode == Mode::Diablo {
                 self.parser.expect(TokenType::End)?;
@@ -434,20 +471,19 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     {
         let pos = self.parser.save_pos();
         let ident = self.parser.expect(TokenType::Ident)?;
-        println!("YYY {:?}", ident);
 
         let mut lookahead = self.parser.lookahead(2);
 
         if let Some(_token) = lookahead.peek(TokenType::LcBrace)? {
             // Visit a struct variant.
             self.parser.restore_pos(pos);
-            return visitor.visit_enum(Enum::new(self, Some(ident.value)))
+            return visitor.visit_enum(Enum::new(self))
         }
 
         if let Some(_token) = lookahead.peek2(TokenType::Ident, TokenType::LcBrace)? {
             // Visit a struct variant with label.
             self.parser.restore_pos(pos);
-            return visitor.visit_enum(Enum::new(self, Some(ident.value)))
+            return visitor.visit_enum(Enum::new(self))
         }
 
         // Unit variant.
@@ -479,14 +515,12 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
 // This handles a comma-separated list.
 struct ListAccess<'a> {
     de: &'a mut Deserializer,
-    name: Option<Token>,
     first: bool,
 }
 
 impl<'a> ListAccess<'a> {
     fn new(de: &'a mut Deserializer) -> Self {
         ListAccess {
-            name: de.cur_name.clone(),
             de,
             first: true,
         }
@@ -515,20 +549,17 @@ impl<'de, 'a> SeqAccess<'de> for ListAccess<'a> {
 
                 // See if the next section is a continuation.
                 let mut continuation = false;
-                if let Some(ref name) = self.name {
 
-                    let mut lookahead2 = self.de.parser.lookaheadnl(2);
+                let mut lookahead2 = self.de.parser.lookaheadnl(2);
 
-                    if let Some(ident) = lookahead2.peek2(self.de.eov, TokenType::Ident)? {
-                        if self.de.same_section(&ident, &name) {
-                            // It is a continuation. The value name might be an
-                            // alias, so update the current name. This is _only_
-                            // useful for the SectionName trait.
-                            self.name = Some(ident.clone());
-                            self.de.cur_name = Some(ident);
-                            lookahead2.advance(&mut self.de.parser);
-                            continuation = true;
-                        }
+                if let Some(ident) = lookahead2.peek2(self.de.eov, TokenType::Ident)? {
+                    if self.de.current_section(&ident) {
+                        // It is a continuation. The value name might be an
+                        // alias, so update the current name. This is _only_
+                        // useful for the SectionName trait.
+                        self.de.ctx.update_section_token(ident);
+                        lookahead2.advance(&mut self.de.parser);
+                        continuation = true;
                     }
                 }
                 if !continuation {
@@ -551,23 +582,21 @@ struct SectionAccess<'a> {
     de: &'a mut Deserializer,
     label: Option<String>,
     first: bool,
-    name: Option<Token>,
-    _fields: Option<&'static [&'static str]>,
+    fields: Option<&'static [&'static str]>,
 }
 
 impl<'a> SectionAccess<'a> {
     fn new(
         de: &'a mut Deserializer,
         label: Option<String>,
-        _fields: Option<&'static [&'static str]>,
+        fields: Option<&'static [&'static str]>,
     ) -> Self {
         log::debug!("SectionAccess::new");
         SectionAccess {
-            name: de.cur_name.clone(),
             label,
             de,
             first: true,
-            _fields,
+            fields,
         }
     }
 }
@@ -582,30 +611,27 @@ impl<'de, 'a> SeqAccess<'de> for SectionAccess<'a> {
     {
         log::debug!(
             "SectionAccess::SeqAccess::next_element_seed {:?}",
-            self.name
+            self.de.ctx.token,
         );
 
         if !self.first {
             // See if the next section is a continuation.
-            if let Some(ref name) = self.name {
-                let mut continuation = false;
-                let mut lookahead = self.de.parser.lookahead(1);
+            let mut continuation = false;
+            let mut lookahead = self.de.parser.lookahead(1);
 
-                if let Some(token) = lookahead.peek(TokenType::Ident)? {
-                    if self.de.same_section(&token, &name) {
-                        // It is a continuation. The value name might be an
-                        // alias, so update the current name. This is _only_
-                        // useful for the SectionName trait.
-                        self.name = Some(token.clone());
-                        self.de.cur_name = Some(token);
-                        continuation = true;
-                        lookahead.advance(&mut self.de.parser);
-                    }
+            if let Some(token) = lookahead.peek(TokenType::Ident)? {
+                if self.de.current_section(&token) {
+                    // It is a continuation. The value name might be an
+                    // alias, so update the current name. This is _only_
+                    // useful for the SectionName trait.
+                    self.de.ctx.update_section_token(token);
+                    continuation = true;
+                    lookahead.advance(&mut self.de.parser);
                 }
-                if !continuation {
-                    //log::debug!("SectionAccess::SeqAccess: end of section {:?}", name);
-                    return Ok(None);
-                }
+            }
+            if !continuation {
+                //log::debug!("SectionAccess::SeqAccess: end of section {:?}", name);
+                return Ok(None);
             }
         }
         self.first = false;
@@ -644,35 +670,14 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
 
         // if we're at root-level, check for end-of-file.
         log::debug!("check for EOF");
-        if self.de.level == 1 && self.de.parser.is_eof() {
+        if self.de.ctx.level == 1 && self.de.parser.is_eof() {
             return Ok(None);
         }
         log::debug!("check for EOF done");
 
         let mut lookahead = self.de.parser.lookahead(1);
 
-        // Expect an ident.
-        let token = lookahead.peek(TokenType::Ident)?;
-        if let Some(ref token) = token {
-
-            // yes, we have an identifier. must be one of the struct fieldnames.
-            let fields = self._fields.as_ref().unwrap();
-            let field = token.value.as_str();
-            if !fields.contains(&field) {
-                let alias = self.de.aliases.get(field);
-                if alias.is_none() || !fields.contains(&alias.unwrap().as_str()) {
-                    // advance parser, then generate error.
-                    lookahead.advance(&mut self.de.parser);
-                    return Err(Error::new(
-                        format!("unknown field: `{}'", token.value),
-                        token.pos,
-                    ));
-                }
-            }
-            log::debug!("XXX set cur_name to {}", token.value);
-            self.de.cur_name = Some(token.clone());
-        }
-        // Or a closing brace.
+        // Check if it's the end of the section.
         let closed = if self.de.mode == Mode::Diablo {
             lookahead.peek(TokenType::End)?.is_some()
         } else {
@@ -681,12 +686,33 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
         if closed {
             return Ok(None);
         }
-        lookahead.end()?;
 
-        // Deserialize a map key.
-        seed.deserialize(&mut *self.de)
-            .map(Some)
-            .map_err(|e| update_tpos(e, &token))
+        // No, so expect an ident.
+        if let Some(token) = lookahead.peek(TokenType::Ident)? {
+            lookahead.advance(&mut self.de.parser);
+
+            // First resolve this field name - might be an alias.
+            let type_dot_field = format!("{}.{}", self.de.ctx.section_type(), token.value);
+            let name = self.de.aliases.get(&type_dot_field)
+                .map(|s| s.as_str())
+                .unwrap_or(token.value.as_str());
+
+            // now see if it matches one of the struct's field names.
+            let fields = self.fields.as_ref().unwrap();
+            if !fields.contains(&name) {
+                return Err(Error::new(
+                    format!("unknown field: `{}'", token.value),
+                    token.pos,
+                ));
+            }
+            log::debug!("XXX set section_name_token to {}", token.value);
+            self.de.ctx.update_section_token(token.clone());
+
+            // and deserialize the resolved (unaliases) map key.
+            return seed.deserialize(name.into_deserializer()).map(Some);
+        }
+
+        Err(lookahead.end().unwrap_err())
     }
 
     fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value>
@@ -714,13 +740,11 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
 
 struct Enum<'a> {
     de: &'a mut Deserializer,
-    name: Option<String>,
 }
 
 impl<'a> Enum<'a> {
-    fn new(de: &'a mut Deserializer, name: Option<String>) -> Self {
-        println!("ZZZ name is {:?}", name);
-        Enum { de, name }
+    fn new(de: &'a mut Deserializer) -> Self {
+        Enum { de }
     }
 }
 
@@ -779,14 +803,12 @@ impl<'de, 'a> VariantAccess<'de> for Enum<'a> {
     where
         V: Visitor<'de>,
     {
-        self.de.struct_variant_name = self.name;
         de::Deserializer::deserialize_struct(self.de, "", fields, visitor)
     }
 }
 
 // helper
 fn update_pos(mut e: Error, pos: TokenPos) -> Error {
-    //println!("update_pos {:?} {:?}", e, pos);
     if e.pos.offset == 0 {
         e.pos = pos;
     }
@@ -795,7 +817,6 @@ fn update_pos(mut e: Error, pos: TokenPos) -> Error {
 
 // helper
 fn update_tpos(mut e: Error, token: &Option<Token>) -> Error {
-    //println!("update_tpos {:?} {:?}", e, token);
     if e.pos.offset == 0 {
         e.pos = token.as_ref().map(|t| t.pos).unwrap_or(TokenPos::none());
     }
