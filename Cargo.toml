@@ -17,7 +17,7 @@ authors = ["Miquel van Smoorenburg <mike@langeraar.net>"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
 keywords = ["configuration", "file", "config", "parser", "serde"]
-categories = ["Configuration", "Parser implementations", "Encoding" ]
+categories = ["config", "encoding", "parser-implementations" ]
 
 [lib]
 name = "curlyconf"
