@@ -384,7 +384,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     where
         V: Visitor<'de>,
     {
-        log::debug!("deserialize_map");
+        debug!("deserialize_map");
 
         // Give the visitor access to each entry of the map.
         let hma = HashMapAccess::new(&mut self);
@@ -410,22 +410,22 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     where
         V: Visitor<'de>,
     {
-        log::debug!("deserialize_struct({})", _name);
+        debug!("deserialize_struct({})", _name);
 
         let mut label = None;
         if self.ctx.level > 0 {
             // see if it starts with a label.
             let mut lookahead = self.parser.lookahead(1);
             let token = lookahead.peek(TokenType::Expr)?;
-            log::debug!("deserialize_struct({}): peeked: {:?}", _name, token);
+            debug!("deserialize_struct({}): peeked: {:?}", _name, token);
             if let Some(lbl) = token {
                 // yes. so "fields" must contain "__label__".
                 lookahead.advance(&mut self.parser);
                 if !fields.contains(&"__label__") {
-                    log::debug!("deserialize_struct({}): fields has no __label__", _name);
+                    debug!("deserialize_struct({}): fields has no __label__", _name);
                     return Err(Error::new(format!("expected '{{'"), lbl.pos));
                 }
-                log::debug!("fields is OK");
+                debug!("fields is OK");
                 label = Some(lbl.value);
             } else {
                 // no, so if there's a "__label__" field return an error.
@@ -449,7 +449,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         self.ctx.restore(saved_context);
         let value = res.map_err(|e| update_pos(e, self.ctx.subsection_pos()))?;
 
-        log::debug!("XX level is {}", self.ctx.level);
+        debug!("XX level is {}", self.ctx.level);
         if self.ctx.level != 0 {
             // Parse the closing brace of the map.
             if self.mode == Mode::Diablo {
@@ -595,7 +595,7 @@ impl<'a> SectionAccess<'a> {
         label: Option<String>,
         fields: Option<&'static [&'static str]>,
     ) -> Self {
-        log::debug!("SectionAccess::new");
+        debug!("SectionAccess::new");
         SectionAccess {
             label,
             de,
@@ -613,7 +613,7 @@ impl<'de, 'a> SeqAccess<'de> for SectionAccess<'a> {
     where
         T: DeserializeSeed<'de>,
     {
-        log::debug!(
+        debug!(
             "SectionAccess::SeqAccess::next_element_seed {:?}",
             self.de.ctx.token,
         );
@@ -634,7 +634,7 @@ impl<'de, 'a> SeqAccess<'de> for SectionAccess<'a> {
                 }
             }
             if !continuation {
-                //log::debug!("SectionAccess::SeqAccess: end of section {:?}", name);
+                //debug!("SectionAccess::SeqAccess: end of section {:?}", name);
                 return Ok(None);
             }
         }
@@ -656,11 +656,11 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
     where
         K: DeserializeSeed<'de>,
     {
-        log::debug!("SectionAccess::MapAccess::next_key_seed");
+        debug!("SectionAccess::MapAccess::next_key_seed");
 
         // if the struct has a __label__ field, insert field name (once!)
         if self.first && self.label.is_some() {
-            log::debug!("SectionAccess::MapAccess::next_key_seed: insert label {:?}", self.label);
+            debug!("SectionAccess::MapAccess::next_key_seed: insert label {:?}", self.label);
             let de = "__label__".into_deserializer();
             return seed.deserialize(de).map(Some);
         }
@@ -674,11 +674,11 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
         self.first = false;
 
         // if we're at root-level, check for end-of-file.
-        log::debug!("check for EOF");
+        debug!("check for EOF");
         if self.de.ctx.level == 1 && self.de.parser.is_eof() {
             return Ok(None);
         }
-        log::debug!("check for EOF done");
+        debug!("check for EOF done");
 
         // Check for a continuation.
         let mut continuation = false;
@@ -706,7 +706,7 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
 
         // No, so expect an ident.
         if let Some(token) = lookahead.peek(TokenType::Ident)? {
-            log::debug!("next_key_seed: key {:?}", token);
+            debug!("next_key_seed: key {:?}", token);
             lookahead.advance(&mut self.de.parser);
 
             // First resolve this field name - might be an alias.
@@ -726,7 +726,7 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
                     token.pos,
                 ));
             }
-            log::debug!("XXX set section_name_token to {}", token.value);
+            debug!("XXX set section_name_token to {}", token.value);
             self.de.ctx.update_section_token(token.clone());
 
             // and deserialize the resolved (unaliases) map key.
@@ -740,7 +740,7 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
     where
         V: DeserializeSeed<'de>,
     {
-        log::debug!(
+        debug!(
             "SectionAccess::MapAccess::next_value_seed {}",
             std::any::type_name::<V::Value>()
         );
@@ -768,7 +768,7 @@ impl<'a> HashMapAccess<'a> {
     fn new(
         de: &'a mut Deserializer,
     ) -> Self {
-        log::debug!("HashMapAccess::new");
+        debug!("HashMapAccess::new");
         HashMapAccess {
             de,
             first: true,
@@ -784,7 +784,7 @@ impl<'de, 'a> MapAccess<'de> for HashMapAccess<'a> {
     where
         K: DeserializeSeed<'de>,
     {
-        log::debug!("HashMapAccess::MapAccess::next_key_seed");
+        debug!("HashMapAccess::MapAccess::next_key_seed");
 
         if !self.first {
             // Check for a continuation.
@@ -831,7 +831,7 @@ impl<'de, 'a> MapAccess<'de> for HashMapAccess<'a> {
     where
         V: DeserializeSeed<'de>,
     {
-        log::debug!(
+        debug!(
             "HashMapAccess::MapAccess::next_value_seed {}",
             std::any::type_name::<V::Value>()
         );

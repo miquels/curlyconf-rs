@@ -1,18 +1,34 @@
 [package]
 name = "curlyconf"
-version = "0.1.0"
-authors = ["Miquel van Smoorenburg <mikevs@xs4all.net>"]
+
+# When releasing to crates.io:
+# - Update html_root_url in src/lib.rs
+# - Update CHANGELOG.md.
+# - Run ./generate-readme
+# - Create git tag v0.x.y
+version = "0.1.0-alpha.1"
+
+readme = "README.md"
+description = "Configuration file parser"
+documentation = "https://docs.rs/curlyconf"
+repository = "https://github.com/miquels/curlyconf-rs"
+homepage = "https://github.com/miquels/curlyconf-rs"
+authors = ["Miquel van Smoorenburg <mike@langeraar.net>"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
+keywords = ["configuration", "file", "config", "parser", "serde"]
+categories = ["Configuration", "Parser implementations", "Encoding" ]
+
+[lib]
+name = "curlyconf"
+path = "src/lib.rs"
 
 [dependencies]
-linked-hash-map = "0.5.3"
 log = "0.4.8"
 once_cell = "1.4.0"
 regex = "1.3.9"
 serde = { version = "1.0.114", features = [ "derive" ] }
-env_logger = "0.7.1"
-ipnet = { version = "2.3.0", features = [ "serde" ] }
 
 [dev-dependencies]
 env_logger = "0.7.1"
+ipnet = { version = "2.3.0", features = [ "serde" ] }

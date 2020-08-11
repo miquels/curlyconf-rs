@@ -1,18 +1,18 @@
-# curlyconf-rs
+# curlyconf
+
+[![Apache-2.0 licensed](https://img.shields.io/badge/license-Apache2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0.txt)
+[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](http://opensource.org/licenses/MIT)
+[![crates.io](https://meritbadge.herokuapp.com/webdav-handler)](https://crates.io/crates/curlyconf)
+[![Released API docs](https://docs.rs/webdav-handler/badge.svg)](https://docs.rs/curlyconf)
+
+### Curlyconf
 
 Curlyconf is a configuration file reader for the configuration
 file format used by, for example, named.conf and dhcpd.conf.
 
-Why? Because I wanted something more readable than JSON or YAML.
-And something more hierarchical than TOML.
+### Example config (file.cfg)
 
-I'm still considering naming this crate `pint`, for Pint Is Not Toml.
-Coming up with a good name is hard. Perhaps I should try something
-easier first, like studying cache invalidation strategies.
-
-## Example config (file.cfg)
-
-```text
+```
 person charlie {
 	fullname "Charlie Brown";
 	address 192.168.1.1;
@@ -22,11 +22,12 @@ person snoopy {
 }
 ```
 
-## Example code
+### Example code
 
 ```rust
 use serde::Deserialize;
 
+// The initial section of any config is a rust struct.
 #[derive(Debug, Deserialize)]
 struct Config {
     person: Vec<Person>,
@@ -42,48 +43,56 @@ struct Person {
     address: Option<std::net::IpAddr>,
 }
 
-type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
-
-fn main() -> Result<()> {
+fn main() {
     // Read the configuration file.
-    let config: Config = curlyconf::from_file("file.cfg");
+    let config: Config = match curlyconf::from_file("file.cfg") {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
 
     // Print what we got (println!("{:?}", config) would be easier...).
     for (i, p) in config.person.iter().enumerate() {
         println!("{}: {} fullname {:?} addr {:?}", i, p.name, p.fullname, p.address);
     }
-
-    Ok(())
 }
-```
-## This will print:
 
-	0: charlie fullname Some("Charlie Brown") addr Some(V4(192.168.1.1))
-	1: snoopy fullname Some("Snoopy") addr None
+```
+
+### This will print:
+
+```
+0: charlie fullname Some("Charlie Brown") addr Some(V4(192.168.1.1))
+1: snoopy fullname Some("Snoopy") addr None
+```
 
 Curlyconf uses [serde](https://crates.io/crates/serde) to deserialize the
 configuration file values to rust types, just like almost every other
 crate that does something similar.
 
-## Sections and values.
+### Sections and values.
 
 The configuration file contains section names, labels, sections, value names, and values:
 
-- sections. they have a section\_name, an optional label, and contain
-  a list of other sections and values.
-- values. this is a value\_name, followed by a value. If the value is a `Vec`,
+- **sections**. they have a section\_name, an optional label, and contain
+  a list of other sections and values. The rust type of a section is a struct.
+- **values**. this is a value\_name, followed by a value. If the value is a `Vec`,
   there can be multiple values, separated by a comma.
 
 A section can only have a label if:
 
-- it is part of a `Vec<Section>` (TODO: HashMaps)
-- the Rust struct that corresponds to the section has a `__label__` field.
+- it is part of a `HashMap<Key, Section>`, or
+- it is part of a `Vec<Section>` and the rust struct that corresponds to the
+  section has a `__label__` field. That field will be set to the label value.
 
-The `__label__` field of the struct will then be set to the label value.
 The label type can be any type, it does not have to be a string - it could
 also be, for example, a `PathBuf` or `IpAddr`.
 
-```text
+The basic structure of a config file is thus:
+
+```
 section_name [label] {
     value_name value [,value...];
     value_name value [,value...];
@@ -92,6 +101,34 @@ section_name [label] {
     }
 }
 ```
+
+`Enum`s are also supported (see the `serde` docs) so you can do things like:
+
+```rust
+#[derive(Debug, Deserialize)]
+struct Config {
+    animal: Animal,
+}
+
+#[derive(Debug, Deserialize)]
+enum Animal {
+    Cat {
+         purrs: bool,
+    },
+    Dog {
+         barks: bool,
+    },
+}
+```
+
+And then have a config like
+
+```
+animal cat {
+    purrs;
+}
+```
+
 
 ## License
 
@@ -107,4 +144,3 @@ at your option.
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall
 be dual licensed as above, without any additional terms or conditions.
-

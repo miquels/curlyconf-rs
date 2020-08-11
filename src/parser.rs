@@ -66,7 +66,7 @@ impl Parser {
 
     // Expect a certain token-type.
     pub fn expect(&mut self, want: TokenType) -> Result<Token> {
-        log::debug!("expect {:?}", want);
+        debug!("expect {:?}", want);
         // skip newlines, _unless_ that is what we are looking for.
         let mut token = loop {
             let t = self.next_token()?;
@@ -77,21 +77,21 @@ impl Parser {
 
         if token.ttype == TokenType::Word {
             if want == TokenType::Ident && is_ident(&mut token) {
-                log::debug!("+-- found {:?}", token);
+                debug!("+-- found {:?}", token);
                 return Ok(token);
             }
             if want == TokenType::Expr && is_expr(&mut token) {
-                log::debug!("+-- found {:?}", token);
+                debug!("+-- found {:?}", token);
                 return Ok(token);
             }
         }
 
         if want == token.ttype {
-            log::debug!("+-- found {:?}", token);
+            debug!("+-- found {:?}", token);
             return Ok(token);
         }
 
-        log::debug!("+-- failed, got {:?}", token);
+        debug!("+-- failed, got {:?}", token);
         Err(Error::new(format!("expected {}", want.as_str()), token.pos))
     }
 
@@ -263,27 +263,27 @@ impl Lookahead {
     fn compare(&mut self, mut token: Token, want: &TokenType) -> Option<Token> {
         if token.ttype == TokenType::Word {
             if want == &TokenType::Ident && is_ident(&mut token) {
-                log::debug!("+-- found {:?}", token);
+                debug!("+-- found {:?}", token);
                 return Some(token);
             }
             if want == &TokenType::Expr && is_expr(&mut token) {
-                log::debug!("+-- found {:?}", token);
+                debug!("+-- found {:?}", token);
                 return Some(token);
             }
         }
 
         if want == &token.ttype {
-            log::debug!("+-- found {:?}", token);
+            debug!("+-- found {:?}", token);
             return Some(token);
         }
 
-        log::debug!("+-- failed, got {:?}", token);
+        debug!("+-- failed, got {:?}", token);
 
         None
     }
 
     pub fn advance(&mut self, parser: &mut Parser) {
-        log::debug!("lookahead::advance: to {:?}", self.next_pos);
+        debug!("lookahead::advance: to {:?}", self.next_pos);
         parser.restore_pos(self.next_pos[0]);
     }
 
