@@ -2,8 +2,8 @@
 
 [![Apache-2.0 licensed](https://img.shields.io/badge/license-Apache2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0.txt)
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](http://opensource.org/licenses/MIT)
-[![crates.io](https://meritbadge.herokuapp.com/webdav-handler)](https://crates.io/crates/curlyconf)
-[![Released API docs](https://docs.rs/webdav-handler/badge.svg)](https://docs.rs/curlyconf)
+[![crates.io](https://meritbadge.herokuapp.com/curlyconf)](https://crates.io/crates/curlyconf)
+[![Released API docs](https://docs.rs/curlyconf/badge.svg)](https://docs.rs/curlyconf)
 
 ### Curlyconf
 
