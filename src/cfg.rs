@@ -10,6 +10,11 @@ use crate::error::Result;
 use crate::tokenizer::Mode;
 
 /// Read configuration from a string.
+///
+/// This uses the defaults (e.g. `Mode::Semicolon`). If you want to
+/// configure the configuration parser, use a [`Builder`] struct.
+///
+/// [`Builder`]: struct.Builder.html
 pub fn from_str<T>(s: &str) -> Result<T>
 where
     T: for<'de> Deserialize<'de>,
@@ -18,6 +23,11 @@ where
 }
 
 /// Read configuration from a file.
+///
+/// This uses the defaults (e.g. `Mode::Semicolon`). If you want to
+/// configure the configuration parser, use a [`Builder`] struct.
+///
+/// [`Builder`]: struct.Builder.html
 pub fn from_file<T>(name: impl Into<String>) -> io::Result<T>
 where
     T: for<'de> Deserialize<'de>,
@@ -45,8 +55,8 @@ impl Builder {
     }
 
     /// Set the mode of this configuration file parser:
-    /// - Mode::Semicolon: values must end in `;'
-    /// - Mode::Newline: values end with a newline.
+    /// - `Mode::Semicolon`: values must end in `;`.
+    /// - `Mode::Newline`: values end with a newline.
     pub fn mode(mut self, mode: Mode) -> Builder {
         self.mode = mode;
         self
@@ -111,9 +121,9 @@ impl Builder {
     }
 }
 
-/// Helper trait to access the state of the parser.
+/// Make it possible for `Deserialize` impls to access the state of the parser.
 ///
-/// Automatically implemented for everything that implements `Deserialize`.
+/// Automatically implemented on every `Deserializer` implementation.
 pub trait ParserAccess {
     /// Get the name of the value that's currently being parsed.
     ///
@@ -127,7 +137,8 @@ pub trait ParserAccess {
         SECTION_CTX.with(|ctx| ctx.borrow().subsection_name().to_string())
     }
 
-    /// Get a direct reference to the parser instead of via the Deserializer handle.
+    /// Get a direct reference to the parser instead of via the Deserializer handle
+    /// so that it can be stored somewhere (usually in a visitor struct).
     fn parser(&self) -> Parser {
         Parser
     }
@@ -135,6 +146,11 @@ pub trait ParserAccess {
 
 impl<'de, T> ParserAccess for T where T: de::Deserializer<'de> {}
 
+/// Reference to the parser for `Deserialize` impls.
+///
+/// Implements [`ParserAccess`].
+///
+/// [`ParserAccess`]: trait.ParserAccess.html
 pub struct Parser;
 impl ParserAccess for Parser {}
 
@@ -167,7 +183,7 @@ mod tests {
         let j = r#"test foo {
             int 1;
             seq a,"b";
-        };"#;
+        }"#;
         let expected = Main {
             test: Test {
                 __label__: "foo".to_owned(),
