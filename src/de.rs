@@ -155,13 +155,15 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         // No argument means "true".
         // So "enable-warp;" is the same as "enable-warp yes;".
         if let Some(token) = lookahead.peek(self.eov)? {
-            return visitor.visit_bool(true).map_err(|e| update_pos(e, token.pos));
+            return visitor
+                .visit_bool(true)
+                .map_err(|e| update_pos(e, token.pos));
         }
         if let Some(token) = lookahead.peek(TokenType::Expr)? {
             lookahead.advance(&mut self.parser);
             let v = match token.value.as_str() {
-                "y"|"yes"|"t"|"true"|"on"|"1" => true,
-                "n"|"no"|"f"|"false"|"off"|"0" => false,
+                "y" | "yes" | "t" | "true" | "on" | "1" => true,
+                "n" | "no" | "f" | "false" | "off" | "0" => false,
                 _ => return Err(Error::new(format!("expected boolean"), token.pos)),
             };
             return visitor.visit_bool(v).map_err(|e| update_pos(e, token.pos));
@@ -660,7 +662,10 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
 
         // if the struct has a __label__ field, insert field name (once!)
         if self.first && self.label.is_some() {
-            debug!("SectionAccess::MapAccess::next_key_seed: insert label {:?}", self.label);
+            debug!(
+                "SectionAccess::MapAccess::next_key_seed: insert label {:?}",
+                self.label
+            );
             let de = "__label__".into_deserializer();
             return seed.deserialize(de).map(Some);
         }
@@ -765,14 +770,9 @@ struct HashMapAccess<'a> {
 }
 
 impl<'a> HashMapAccess<'a> {
-    fn new(
-        de: &'a mut Deserializer,
-    ) -> Self {
+    fn new(de: &'a mut Deserializer) -> Self {
         debug!("HashMapAccess::new");
-        HashMapAccess {
-            de,
-            first: true,
-        }
+        HashMapAccess { de, first: true }
     }
 }
 
@@ -818,7 +818,11 @@ impl<'de, 'a> MapAccess<'de> for HashMapAccess<'a> {
         self.first = false;
 
         let mut lookahead = self.de.parser.lookaheadnl(2);
-        let ttype = if self.de.mode == Mode::Diablo { TokenType::Nl } else { TokenType::LcBrace };
+        let ttype = if self.de.mode == Mode::Diablo {
+            TokenType::Nl
+        } else {
+            TokenType::LcBrace
+        };
         if let Some(label) = lookahead.peek2(TokenType::Expr, ttype)? {
             // it's a section. do not eat the label.
             return seed.deserialize(label.value.into_deserializer()).map(Some);

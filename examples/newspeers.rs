@@ -25,12 +25,13 @@ fn main() -> Result<()> {
         .alias::<NewsPeer>("addist", "distributions")
         .alias::<NewsPeer>("deldist", "distributions")
         .ignore::<NewsPeer>("realtime")
-        .from_file("examples/newspeers.cfg") {
-        Ok(cfg @ Config{..}) => cfg,
+        .from_file("examples/newspeers.cfg")
+    {
+        Ok(cfg @ Config { .. }) => cfg,
         Err(e) => {
             println!("{}", e);
             std::process::exit(1);
-        },
+        }
     };
 
     println!("{:#?}", config);
@@ -42,9 +43,10 @@ mod newspeers {
     use std::net::IpAddr;
 
     use curlyconf::{Parser, ParserAccess};
-    use serde::{de::Deserializer, Deserialize, de::SeqAccess, de::Visitor};
     use ipnet::IpNet;
+    use serde::{de::Deserializer, de::SeqAccess, de::Visitor, Deserialize};
 
+    #[rustfmt::skip]
     #[derive(Default, Debug, Clone, Deserialize)]
     #[serde(default)]
     pub struct NewsPeer {
@@ -101,15 +103,15 @@ mod newspeers {
     pub struct WildMatList(Vec<String>);
 
     impl<'de> Deserialize<'de> for WildMatList {
-
         fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
         where
             D: Deserializer<'de>,
         {
-            struct WildMatVisitor { parser: Parser }
+            struct WildMatVisitor {
+                parser: Parser,
+            }
 
             impl<'de> Visitor<'de> for WildMatVisitor {
-
                 type Value = WildMatList;
 
                 fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -125,7 +127,7 @@ mod newspeers {
                         match self.parser.value_name().as_str() {
                             "delgroup" => value.insert_str(0, "!"),
                             "delgroupany" => value.insert_str(0, "@"),
-                            _ => {},
+                            _ => {}
                         }
                         values.push(value);
                     }
@@ -135,7 +137,7 @@ mod newspeers {
             }
 
             let parser = deserializer.parser();
-            deserializer.deserialize_seq(WildMatVisitor{ parser })
+            deserializer.deserialize_seq(WildMatVisitor { parser })
         }
     }
 
@@ -143,7 +145,6 @@ mod newspeers {
     pub struct HashFeed(Vec<String>);
 
     impl<'de> Deserialize<'de> for HashFeed {
-
         fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
         where
             D: Deserializer<'de>,
