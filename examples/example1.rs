@@ -61,10 +61,6 @@ fn main() -> Result<()> {
         either peer baz {
             hostname "host3";
         }
-        #either users {
-        #    name "mikevs";
-        #    id 1000;
-        #}
 "#;
 
     let cfg2 = r#"
@@ -80,6 +76,10 @@ fn main() -> Result<()> {
             tuple 10, "12"
         }
         color blue
+        either users {
+            name "mikevs"
+            id 1000
+        }
 "#;
 
     match curlyconf::from_str(cfg) {

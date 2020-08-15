@@ -198,6 +198,7 @@ impl Lookahead {
         self.peekx(&[want1, want2])
     }
 
+    #[allow(dead_code)]
     pub fn peek3(
         &mut self,
         want1: TokenType,

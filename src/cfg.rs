@@ -40,7 +40,6 @@ pub struct Builder {
     mode: Mode,
     aliases: HashMap<String, String>,
     ignored: HashSet<String>,
-    sections: HashSet<String>,
 }
 
 impl Builder {
@@ -50,7 +49,6 @@ impl Builder {
             mode: Mode::Semicolon,
             aliases: HashMap::new(),
             ignored: HashSet::new(),
-            sections: HashSet::new(),
         }
     }
 
@@ -83,20 +81,13 @@ impl Builder {
         self
     }
 
-    // Only used with Mode::Diablo, and we hide that.
-    #[doc(hidden)]
-    pub fn section(mut self, section_name: impl Into<String>) -> Builder {
-        self.sections.insert(section_name.into());
-        self
-    }
-
     /// This concludes the building phase and reads the configuration from a string.
     pub fn from_str<T>(self, text: &str) -> Result<T>
     where
         T: for<'de> Deserialize<'de>,
     {
         let mut deserializer =
-            Deserializer::from_str(text, self.mode, self.aliases, self.ignored, self.sections);
+            Deserializer::from_str(text, self.mode, self.aliases, self.ignored);
         T::deserialize(&mut deserializer)
     }
 
@@ -111,7 +102,7 @@ impl Builder {
         let text = String::from_utf8(data)
             .map_err(|_| IoError::new(Kind::Other, format!("{}: utf-8 error", name)))?;
         let mut deserializer =
-            Deserializer::from_str(text, self.mode, self.aliases, self.ignored, self.sections);
+            Deserializer::from_str(text, self.mode, self.aliases, self.ignored);
         T::deserialize(&mut deserializer)
             .map_err(|mut e| {
                 e.file_name = name;

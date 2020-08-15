@@ -1,12 +1,11 @@
-use std::collections::HashMap;
-
-use serde::Deserialize;
-
+use linked_hash_map::LinkedHashMap;
 use newspeers::NewsPeer;
+use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 struct Config {
-    newspeer: HashMap<String, NewsPeer>,
+    //newspeer: Vec<NewsPeer>,
+    newspeer: LinkedHashMap<String, NewsPeer>,
 }
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
