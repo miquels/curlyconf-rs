@@ -1,4 +1,4 @@
-#![doc(html_root_url = "https://docs.rs/curlyconf/0.1.0-alpha.1")]
+#![doc(html_root_url = "https://docs.rs/curlyconf/0.1.0-alpha.2")]
 //! ## Curlyconf
 //!
 //! Curlyconf is a configuration file reader for the configuration
@@ -125,7 +125,7 @@
 //! ```
 //!
 
-pub(crate) const DEBUG: bool = true;
+pub(crate) const DEBUG: bool = false;
 
 macro_rules! debug {
     ($($tt:tt)*) => {
