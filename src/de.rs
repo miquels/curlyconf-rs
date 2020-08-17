@@ -703,7 +703,7 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
             debug!("XXX set section_name_token to {}", token.value);
             self.de.ctx.update_section_token(token.clone());
 
-            // and deserialize the resolved (unaliases) map key.
+            // and deserialize the resolved (unaliased) map key.
             return seed.deserialize(name.into_deserializer()).map(Some);
         }
 
@@ -721,8 +721,8 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
 
         // if the struct has a __label__ field, insert label value (once!)
         if let Some(label) = self.label.take() {
-            let de = label.into_deserializer();
-            return seed.deserialize(de);
+            let mut de = Deserializer::from_str(label, Mode::Newline, HashMap::new(), HashSet::new());
+            return seed.deserialize(&mut de);
         }
 
         // Deserialize a map value.
@@ -808,9 +808,17 @@ impl<'de, 'a> MapAccess<'de> for HashMapAccess<'a> {
         } else {
             TokenType::LcBrace
         };
-        if let Some(label) = lookahead.peek2(TokenType::Expr, ttype)? {
+        if let Some(_) = lookahead.peek2(TokenType::Expr, ttype)? {
             // it's a section. do not eat the label.
-            return seed.deserialize(label.value.into_deserializer()).map(Some);
+            let saved_pos = self.de.parser.save_pos();
+            let result: Result<K::Value> = seed.deserialize(&mut *self.de);
+            match result {
+                Ok(res) => {
+                    self.de.parser.restore_pos(saved_pos);
+                    return Ok(Some(res));
+                },
+                Err(e) => return Err(e),
+            }
         }
 
         // No, it's a plain value. First we get the map key, which we use
@@ -822,6 +830,7 @@ impl<'de, 'a> MapAccess<'de> for HashMapAccess<'a> {
             token.value = format!("{}.{}", self.de.ctx.subsection_name(), key.value);
             self.subsection = Some(token);
         }
+
         seed.deserialize(&mut *self.de).map(Some)
     }
 
