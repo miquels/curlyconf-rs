@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::io::{self, Error as IoError, ErrorKind as Kind};
+use std::path::PathBuf;
 
 use serde::de;
 use serde::Deserialize;
@@ -28,7 +28,7 @@ where
 /// configure the configuration parser, use a [`Builder`] struct.
 ///
 /// [`Builder`]: struct.Builder.html
-pub fn from_file<T>(name: impl Into<String>) -> io::Result<T>
+pub fn from_file<T>(name: impl Into<PathBuf>) -> io::Result<T>
 where
     T: for<'de> Deserialize<'de>,
 {
@@ -92,20 +92,17 @@ impl Builder {
     }
 
     /// This concludes the building phase and reads the configuration from a file.
-    pub fn from_file<T>(self, name: impl Into<String>) -> io::Result<T>
+    pub fn from_file<T>(self, name: impl Into<PathBuf>) -> io::Result<T>
     where
         T: for<'de> Deserialize<'de>,
     {
-        let name = name.into();
-        let data =
-            fs::read(&name).map_err(|e| IoError::new(e.kind(), format!("{}: {}", name, e)))?;
-        let text = String::from_utf8(data)
-            .map_err(|_| IoError::new(Kind::Other, format!("{}: utf-8 error", name)))?;
         let mut deserializer =
-            Deserializer::from_str(text, self.mode, self.aliases, self.ignored);
+            Deserializer::from_file(name, self.mode, self.aliases, self.ignored)?;
         T::deserialize(&mut deserializer)
             .map_err(|mut e| {
-                e.file_name = name;
+                if let Some(name) = deserializer.parser.filename() {
+                    e.file_name = format!("{:?}", name);
+                }
                 e
             })
             .map_err(|e| IoError::new(Kind::Other, e))

@@ -2,8 +2,17 @@ use linked_hash_map::LinkedHashMap;
 use newspeers::NewsPeer;
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
 struct Config {
+    name: Option<String>,
+    newsfeeds: Newsfeeds,
+    mode: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Newsfeeds {
     //newspeer: Vec<NewsPeer>,
     newspeer: LinkedHashMap<String, NewsPeer>,
 }
@@ -15,8 +24,8 @@ fn main() -> Result<()> {
 
     // Read the configuration file.
     let config = match curlyconf::Builder::new()
-        .alias::<Config>("label", "newspeer")
-        .alias::<Config>("peer", "newspeer")
+        .alias::<Newsfeeds>("label", "newspeer")
+        .alias::<Newsfeeds>("peer", "newspeer")
         .alias::<NewsPeer>("addgroup", "groups")
         .alias::<NewsPeer>("delgroup", "groups")
         .alias::<NewsPeer>("delgroupany", "groups")

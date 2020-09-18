@@ -17,6 +17,7 @@ pub enum TokenType {
     Ident,
     Expr,
     Eof,
+    Eoi,
 }
 use TokenType::*;
 
@@ -50,6 +51,7 @@ impl TokenType {
             Ident => "identifier", // alias for Word
             Expr => "expression",  // alias for Word
             Eof => "end-of-data",
+            Eoi => "end-of-include",
         }
     }
 }

@@ -1,5 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::io;
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use serde::de::{
@@ -10,7 +12,7 @@ use serde::de::{
 use crate::error::{Error, Result};
 use crate::parser::Parser;
 use crate::tokenizer::Mode;
-use crate::tokenizer::{Token, TokenPos, TokenType, Tokenizer};
+use crate::tokenizer::{Token, TokenPos, TokenType};
 
 // We always save a current copy of the section context as a thread local value.
 thread_local!(pub(crate) static SECTION_CTX: RefCell<SectionCtx> = RefCell::new(SectionCtx::empty()));
@@ -77,7 +79,7 @@ impl SectionCtx {
 }
 
 pub(crate) struct Deserializer {
-    parser: Parser,
+    pub(crate) parser: Parser,
     eov: TokenType,
     ctx: SectionCtx,
     is_closed: bool,
@@ -87,14 +89,12 @@ pub(crate) struct Deserializer {
 }
 
 impl Deserializer {
-    pub fn from_str(
-        s: impl Into<String>,
+    fn new(
+        parser: Parser,
         mode: Mode,
         aliases: HashMap<String, String>,
         ignored: HashSet<String>,
     ) -> Self {
-        let tokenizer = Tokenizer::from_string(s, mode);
-        let parser = Parser::new(tokenizer);
         let eov = if mode == Mode::Semicolon {
             TokenType::Semi
         } else {
@@ -109,6 +109,25 @@ impl Deserializer {
             aliases,
             ignored,
         }
+    }
+    pub fn from_str(
+        s: impl Into<String>,
+        mode: Mode,
+        aliases: HashMap<String, String>,
+        ignored: HashSet<String>,
+    ) -> Self {
+        let parser = Parser::from_string(s, mode);
+        Self::new(parser, mode, aliases, ignored)
+    }
+
+    pub fn from_file(
+        file: impl Into<PathBuf>,
+        mode: Mode,
+        aliases: HashMap<String, String>,
+        ignored: HashSet<String>,
+    ) -> io::Result<Self> {
+        let parser = Parser::from_file(file, mode)?;
+        Ok(Self::new(parser, mode, aliases, ignored))
     }
 }
 
@@ -133,6 +152,31 @@ impl Deserializer {
             .map(|s| s.as_str())
             .unwrap_or(self.ctx.subsection_name());
         t1 == t2
+    }
+
+    // check for "include" statement.
+    fn check_include(&mut self) -> Result<()> {
+        // loop, since the included file might start with an include statement.
+        loop {
+            let mut lookahead = self.parser.lookahead(1);
+            if lookahead.peek(TokenType::Eoi)?.is_some() {
+                self.parser.include_end();
+                continue;
+            }
+            if let Some(ident) = lookahead.peek(TokenType::Ident)? {
+                if ident.value == "include" {
+                    lookahead.advance(&mut self.parser);
+                    let filename = self.parser.expect(TokenType::Expr)?;
+                    self.parser.expect(self.eov)?;
+                    self.parser.include(&filename.value).map_err(|e| {
+                        Error::new(e.to_string(), filename.pos)
+                    })?;
+                    continue;
+                }
+            }
+            break;
+        }
+        Ok(())
     }
 }
 
@@ -386,6 +430,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         Ok(value)
     }
 
+    // This is the main entry point- the root type is always a struct.
+    //
     // A struct is like a map. The difference is the __label__ field. If it's
     // not present in the struct, you cannot have a name before the opening brace.
     // Also if it _is_ present in the struct, we must have a label.
@@ -619,7 +665,8 @@ impl<'a> SectionAccess<'a> {
     }
 }
 
-// This handles the ';' or '\n' separated key/value fields of a section.
+// This parses the keys (field names) and values (field values)
+// of a section (struct).
 impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
     type Error = Error;
 
@@ -646,6 +693,9 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
             }
         }
         self.first = false;
+
+        // check for "include" statement.
+        self.de.check_include()?;
 
         // if we're at root-level, check for end-of-file.
         debug!("check for EOF");
