@@ -124,6 +124,30 @@
 //! }
 //! ```
 //!
+//! ## Includes.
+//!
+//! In every section it is possible to include another file, or multiple files.
+//! Simply do:
+//!
+//! ```text
+//! include otherconfig.cfg;
+//! ```
+//!
+//! If the pathname of the included file is relative, it will be interpreted
+//! as relative to the current file being parsed. It's possible to use
+//! wildcards as well, for example:
+//!
+//! ```text
+//! configs {
+//!     include conf.d/*.cfg;
+//! }
+//! ```
+//!
+//! There are some limitations, the main one is that you cannot use the "include"
+//! statement in the middle of a map or list of subsections. Because of the
+//! "include" statement there, the parser cannot lookahead through that
+//! statement to see if the list is bding continued.
+//!
 
 pub(crate) const DEBUG: bool = false;
 

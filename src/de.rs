@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io;
-use std::path::PathBuf;
 use std::str::FromStr;
 
 use serde::de::{
@@ -12,7 +11,7 @@ use serde::de::{
 use crate::error::{Error, Result};
 use crate::parser::Parser;
 use crate::tokenizer::Mode;
-use crate::tokenizer::{Token, TokenPos, TokenType};
+use crate::tokenizer::{Token, TokenSpan, TokenType};
 
 // We always save a current copy of the section context as a thread local value.
 thread_local!(pub(crate) static SECTION_CTX: RefCell<SectionCtx> = RefCell::new(SectionCtx::empty()));
@@ -20,7 +19,7 @@ thread_local!(pub(crate) static SECTION_CTX: RefCell<SectionCtx> = RefCell::new(
 // Info about the section we're processing.
 #[derive(Debug, Clone)]
 pub(crate) struct SectionCtx {
-    token: Token,
+    token: Option<Token>,
     typename: &'static str,
     level: u32,
 }
@@ -29,7 +28,7 @@ impl SectionCtx {
     // Initial value.
     fn empty() -> SectionCtx {
         SectionCtx {
-            token: Token::new(TokenType::Unknown, "", TokenPos::none()),
+            token: None,
             typename: "",
             level: 0,
         }
@@ -43,7 +42,7 @@ impl SectionCtx {
     // Enter a new section. returns the old section.
     fn new2(&mut self, typename: &'static str) -> SectionCtx {
         let this = self.clone();
-        self.token = Token::new(TokenType::Unknown, "", TokenPos::none());
+        self.token = None;
         self.typename = typename.split("<").next().unwrap().split(":").last().unwrap();
         self.level += 1;
         SECTION_CTX.with(|ctx| *ctx.borrow_mut() = self.clone());
@@ -58,7 +57,7 @@ impl SectionCtx {
 
     // Update the section token (name and position).
     fn update_section_token(&mut self, section_token: Token) {
-        self.token = section_token;
+        self.token = Some(section_token);
         SECTION_CTX.with(|ctx| *ctx.borrow_mut() = self.clone());
     }
 
@@ -69,13 +68,14 @@ impl SectionCtx {
 
     // Return the subsection name (aka struct field) we're processing right now.
     pub fn subsection_name(&self) -> &str {
-        self.token.value.as_str()
+        self.token.as_ref().map(|t| t.value()).unwrap_or("")
     }
 
+    /*
     // Position.
     fn subsection_pos(&self) -> TokenPos {
         self.token.pos
-    }
+    }*/
 }
 
 pub(crate) struct Deserializer {
@@ -121,7 +121,7 @@ impl Deserializer {
     }
 
     pub fn from_file(
-        file: impl Into<PathBuf>,
+        file: impl Into<String>,
         mode: Mode,
         aliases: HashMap<String, String>,
         ignored: HashSet<String>,
@@ -132,20 +132,20 @@ impl Deserializer {
 }
 
 impl Deserializer {
-    fn parse_expr<T>(&mut self, name: &str) -> Result<(TokenPos, T)>
+    fn parse_expr<T>(&mut self, name: &str) -> Result<(TokenSpan, T)>
     where
         T: FromStr,
     {
         let word = self.parser.expect(TokenType::Word)?;
-        let value: T = FromStr::from_str(&word.value)
-            .map_err(|_| Error::new(format!("expected {} value", name), word.pos))?;
-        Ok((word.pos, value))
+        let value: T = FromStr::from_str(word.value())
+            .map_err(|_| Error::new(format!("expected {} value", name), word.span()))?;
+        Ok((word.span(), value))
     }
 
     fn current_section(&self, t1: &Token) -> bool {
-        let v1 = format!("{}.{}", self.ctx.section_type(), t1.value);
+        let v1 = format!("{}.{}", self.ctx.section_type(), t1.value());
         let v2 = format!("{}.{}", self.ctx.section_type(), self.ctx.subsection_name());
-        let t1 = self.aliases.get(&v1).unwrap_or(&t1.value);
+        let t1 = self.aliases.get(&v1).map(|v| v.as_str()).unwrap_or(t1.value());
         let t2 = self
             .aliases
             .get(&v2)
@@ -159,17 +159,14 @@ impl Deserializer {
         // loop, since the included file might start with an include statement.
         loop {
             let mut lookahead = self.parser.lookahead(1);
-            if lookahead.peek(TokenType::Eoi)?.is_some() {
-                self.parser.include_end();
-                continue;
-            }
             if let Some(ident) = lookahead.peek(TokenType::Ident)? {
-                if ident.value == "include" {
+                if ident.value() == "include" {
                     lookahead.advance(&mut self.parser);
+                    let curfile = &ident.span().source.filename;
                     let filename = self.parser.expect(TokenType::Expr)?;
                     self.parser.expect(self.eov)?;
-                    self.parser.include(&filename.value).map_err(|e| {
-                        Error::new(e.to_string(), filename.pos)
+                    self.parser.include(filename.value(), curfile).map_err(|e| {
+                        Error::new(e.to_string(), filename.span())
                     })?;
                     continue;
                 }
@@ -188,7 +185,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         V: Visitor<'de>,
     {
         let value = self.parser.expect(TokenType::Word)?;
-        Err(Error::new("BUG: serde called deserialize_any", value.pos))
+        Err(Error::new("BUG: serde called deserialize_any", value.span()))
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value>
@@ -202,16 +199,16 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         if let Some(token) = lookahead.peek(self.eov)? {
             return visitor
                 .visit_bool(true)
-                .map_err(|e| update_pos(e, token.pos));
+                .map_err(|e| update_span(e, token.span()));
         }
         if let Some(token) = lookahead.peek(TokenType::Expr)? {
             lookahead.advance(&mut self.parser);
-            let v = match token.value.as_str() {
+            let v = match token.value() {
                 "y" | "yes" | "t" | "true" | "on" | "1" => true,
                 "n" | "no" | "f" | "false" | "off" | "0" => false,
-                _ => return Err(Error::new(format!("expected boolean"), token.pos)),
+                _ => return Err(Error::new(format!("expected boolean"), token.span())),
             };
-            return visitor.visit_bool(v).map_err(|e| update_pos(e, token.pos));
+            return visitor.visit_bool(v).map_err(|e| update_span(e, token.span()));
         }
         lookahead.error()
     }
@@ -222,80 +219,80 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     where
         V: Visitor<'de>,
     {
-        let (pos, value) = self.parse_expr("i8 integer")?;
-        visitor.visit_i8(value).map_err(|e| update_pos(e, pos))
+        let (span, value) = self.parse_expr("i8 integer")?;
+        visitor.visit_i8(value).map_err(|e| update_span(e, span))
     }
 
     fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        let (pos, value) = self.parse_expr("i16 integer")?;
-        visitor.visit_i16(value).map_err(|e| update_pos(e, pos))
+        let (span, value) = self.parse_expr("i16 integer")?;
+        visitor.visit_i16(value).map_err(|e| update_span(e, span))
     }
 
     fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        let (pos, value) = self.parse_expr("i32 integer")?;
-        visitor.visit_i32(value).map_err(|e| update_pos(e, pos))
+        let (span, value) = self.parse_expr("i32 integer")?;
+        visitor.visit_i32(value).map_err(|e| update_span(e, span))
     }
 
     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        let (pos, value) = self.parse_expr("i64 integer")?;
-        visitor.visit_i64(value).map_err(|e| update_pos(e, pos))
+        let (span, value) = self.parse_expr("i64 integer")?;
+        visitor.visit_i64(value).map_err(|e| update_span(e, span))
     }
 
     fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        let (pos, value) = self.parse_expr("u8 integer")?;
-        visitor.visit_u8(value).map_err(|e| update_pos(e, pos))
+        let (span, value) = self.parse_expr("u8 integer")?;
+        visitor.visit_u8(value).map_err(|e| update_span(e, span))
     }
 
     fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        let (pos, value) = self.parse_expr("u16 integer")?;
-        visitor.visit_u16(value).map_err(|e| update_pos(e, pos))
+        let (span, value) = self.parse_expr("u16 integer")?;
+        visitor.visit_u16(value).map_err(|e| update_span(e, span))
     }
 
     fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        let (pos, value) = self.parse_expr("u32 integer")?;
-        visitor.visit_u32(value).map_err(|e| update_pos(e, pos))
+        let (span, value) = self.parse_expr("u32 integer")?;
+        visitor.visit_u32(value).map_err(|e| update_span(e, span))
     }
 
     fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        let (pos, value) = self.parse_expr("u64 integer")?;
-        visitor.visit_u64(value).map_err(|e| update_pos(e, pos))
+        let (span, value) = self.parse_expr("u64 integer")?;
+        visitor.visit_u64(value).map_err(|e| update_span(e, span))
     }
 
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        let (pos, value) = self.parse_expr("f32 float")?;
-        visitor.visit_f32(value).map_err(|e| update_pos(e, pos))
+        let (span, value) = self.parse_expr("f32 float")?;
+        visitor.visit_f32(value).map_err(|e| update_span(e, span))
     }
 
     fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        let (pos, value) = self.parse_expr("f64 float")?;
-        visitor.visit_f64(value).map_err(|e| update_pos(e, pos))
+        let (span, value) = self.parse_expr("f64 float")?;
+        visitor.visit_f64(value).map_err(|e| update_span(e, span))
     }
 
     fn deserialize_char<V>(self, visitor: V) -> Result<V::Value>
@@ -303,24 +300,24 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         V: Visitor<'de>,
     {
         // Parse a string, check that it is one character, call `visit_char`.
-        let (pos, value) = self.parse_expr("single character")?;
-        visitor.visit_char(value).map_err(|e| update_pos(e, pos))
+        let (span, value) = self.parse_expr("single character")?;
+        visitor.visit_char(value).map_err(|e| update_span(e, span))
     }
 
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        let (pos, value) = self.parse_expr::<String>("string")?;
-        visitor.visit_str(&value).map_err(|e| update_pos(e, pos))
+        let (span, value) = self.parse_expr::<String>("string")?;
+        visitor.visit_str(&value).map_err(|e| update_span(e, span))
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        let (pos, value) = self.parse_expr::<String>("string")?;
-        visitor.visit_str(&value).map_err(|e| update_pos(e, pos))
+        let (span, value) = self.parse_expr::<String>("string")?;
+        visitor.visit_str(&value).map_err(|e| update_span(e, span))
     }
 
     fn deserialize_bytes<V>(self, _visitor: V) -> Result<V::Value>
@@ -377,9 +374,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         V: Visitor<'de>,
     {
         // Give the visitor access to each element of the sequence.
-        let pos = self.parser.save_pos();
         self.is_closed = false;
-        visitor.visit_seq(ListAccess::new(&mut self, false)).map_err(|e| update_pos(e, pos))
+        visitor.visit_seq(ListAccess::new(&mut self, false)).map_err(|e| update_span(e, self.parser.last_span()))
     }
 
     // A tuple is a sequnce of values of potentially different types.
@@ -388,9 +384,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         V: Visitor<'de>,
     {
         // Give the visitor access to each element of the tuple.
-        let pos = self.parser.save_pos();
         self.is_closed = false;
-        visitor.visit_seq(ListAccess::new(&mut self, true)).map_err(|e| update_pos(e, pos))
+        visitor.visit_seq(ListAccess::new(&mut self, true)).map_err(|e| update_span(e, self.parser.last_span()))
     }
 
     // Tuple structs look just like tuples.
@@ -422,7 +417,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         let hma = HashMapAccess::new::<V::Value>(&mut self);
         let value = visitor
             .visit_map(hma)
-            .map_err(|e| update_pos(e, self.ctx.subsection_pos()))?;
+            .map_err(|e| update_span(e, self.parser.last_span()))?;
 
         // We don't expect a ';' or '\n' after this.
         self.is_closed = true;
@@ -457,10 +452,10 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
                 lookahead.advance(&mut self.parser);
                 if !fields.contains(&"__label__") {
                     debug!("deserialize_struct({}): fields has no __label__", _name);
-                    return Err(Error::new(format!("expected '{{'"), lbl.pos));
+                    return Err(Error::new(format!("expected '{{'"), lbl.span()));
                 }
                 debug!("fields is OK");
-                label = Some(lbl.value);
+                label = Some(lbl.value().to_string());
             } else {
                 // no, so if there's a "__label__" field return an error.
                 if fields.contains(&"__label__") {
@@ -481,7 +476,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
         let saved_context = self.ctx.new::<V::Value>();
         let res = visitor.visit_map(SectionAccess::new(&mut self, label, Some(fields)));
         self.ctx.restore(saved_context);
-        let value = res.map_err(|e| update_pos(e, self.ctx.subsection_pos()))?;
+        let value = res.map_err(|e| update_span(e, self.parser.last_span()))?;
 
         debug!("XX level is {}", self.ctx.level);
         if self.ctx.level != 0 {
@@ -511,7 +506,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer {
     {
         let mut lookahead = self.parser.lookaheadnl(1);
         if let Some(token) = lookahead.peek(TokenType::Ident)? {
-            visitor.visit_enum(Enum::new(self)).map_err(|e| update_pos(e, token.pos))
+            visitor.visit_enum(Enum::new(self)).map_err(|e| update_span(e, token.span()))
         } else {
             lookahead.error()
         }
@@ -638,7 +633,7 @@ impl<'de, 'a> SeqAccess<'de> for ListAccess<'a> {
         let token = self.de.parser.peek()?;
         seed.deserialize(&mut *self.de)
             .map(Some)
-            .map_err(|e| update_tpos(e, &token))
+            .map_err(|e| update_tspan(e, &token))
     }
 }
 
@@ -734,23 +729,23 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
             lookahead.advance(&mut self.de.parser);
 
             // First resolve this field name - might be an alias.
-            let type_dot_field = format!("{}.{}", self.de.ctx.section_type(), token.value);
+            let type_dot_field = format!("{}.{}", self.de.ctx.section_type(), token.value());
             let name = self
                 .de
                 .aliases
                 .get(&type_dot_field)
                 .map(|s| s.as_str())
-                .unwrap_or(token.value.as_str());
+                .unwrap_or(token.value());
 
             // now see if it matches one of the struct's field names.
             let fields = self.fields.as_ref().unwrap();
             if !fields.contains(&name) && !self.de.ignored.contains(&type_dot_field) {
                 return Err(Error::new(
-                    format!("unknown field: `{}'", token.value),
-                    token.pos,
+                    format!("unknown field: `{}'", token.value()),
+                    token.span(),
                 ));
             }
-            debug!("XXX set section_name_token to {}", token.value);
+            debug!("XXX set section_name_token to {}", token.value());
             self.de.ctx.update_section_token(token.clone());
 
             // and deserialize the resolved (unaliased) map key.
@@ -779,7 +774,7 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
         self.de.is_closed = false;
         let token = self.de.parser.peek()?;
         seed.deserialize(&mut *self.de)
-            .map_err(|e| update_tpos(e, &token))
+            .map_err(|e| update_tspan(e, &token))
     }
 }
 
@@ -876,9 +871,12 @@ impl<'de, 'a> MapAccess<'de> for HashMapAccess<'a> {
         // value is a Vec, to prevent it to see the next map entry as
         // a continuation of the Vec instead of the map.
         if let Some(key) = lookahead.peek(TokenType::Expr)? {
-            let mut token = self.de.ctx.token.clone();
-            token.value = format!("{}.{}", self.de.ctx.subsection_name(), key.value);
-            self.subsection = Some(token);
+            // Yuck.
+            if let Some(ctx_token) = self.de.ctx.token.as_ref() {
+                let mut token = ctx_token.clone();
+                token.value = Some(format!("{}.{}", self.de.ctx.subsection_name(), key.value()));
+                self.subsection = Some(token);
+            }
         }
 
         seed.deserialize(&mut *self.de).map(Some)
@@ -910,7 +908,7 @@ impl<'de, 'a> MapAccess<'de> for HashMapAccess<'a> {
         };
 
         // Deserialize a map value.
-        let result = seed.deserialize(&mut *self.de).map_err(|e| update_tpos(e, &token));
+        let result = seed.deserialize(&mut *self.de).map_err(|e| update_tspan(e, &token));
 
         // restore subsection name if we changed it.
         if let Some(saved) = saved {
@@ -985,17 +983,19 @@ impl<'de, 'a> VariantAccess<'de> for Enum<'a> {
 }
 
 // helper
-fn update_pos(mut e: Error, pos: TokenPos) -> Error {
-    if e.pos.offset == 0 {
-        e.pos = pos;
+fn update_span(mut e: Error, span: TokenSpan) -> Error {
+    if e.span.is_none() {
+        e.span = Some(span);
     }
     e
 }
 
 // helper
-fn update_tpos(mut e: Error, token: &Option<Token>) -> Error {
-    if e.pos.offset == 0 {
-        e.pos = token.as_ref().map(|t| t.pos).unwrap_or(TokenPos::none());
+fn update_tspan(mut e: Error, token: &Option<Token>) -> Error {
+    if e.span.is_none() {
+        if let Some(token) = token.as_ref() {
+            e.span = Some(token.span());
+        }
     }
     e
 }

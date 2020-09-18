@@ -1,7 +1,6 @@
 use std::borrow::Cow;
-use std::fs;
 use std::io::{self, ErrorKind};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -10,84 +9,74 @@ use crate::error::{Error, Result};
 use crate::tokenizer::*;
 
 pub struct Parser {
-    filenames: Vec<PathBuf>,
-    tokenizers: Vec<Tokenizer>,
+    tokenizer: Tokenizer,
     mode: Mode,
 }
 
 impl Parser {
-    pub fn from_file(name: impl Into<PathBuf>, mode: Mode) -> io::Result<Parser> {
-        let mut this = Parser { filenames: Vec::new(), tokenizers: Vec::new(), mode };
-        this.include(name)?;
-        Ok(this)
+    pub fn from_file(name: impl Into<String>, mode: Mode) -> io::Result<Parser> {
+        let tokenizer = Tokenizer::from_file(name, mode)?;
+        Ok(Parser { tokenizer, mode })
     }
 
     pub fn from_string(name: impl Into<String>, mode: Mode) -> Parser {
-        let tokenizer = Tokenizer::from_string(name, mode);
-        Parser { filenames: Vec::new(), tokenizers: vec![ tokenizer ], mode }
+        let tokenizer = Tokenizer::from_string(name, "config-text", mode);
+        Parser { tokenizer, mode }
     }
 
-    pub fn include(&mut self, name: impl Into<PathBuf>) -> io::Result<()> {
+    pub fn include(&mut self, name: impl Into<String>, curfile: &str) -> io::Result<()> {
         let mut name = name.into();
-        if name.is_relative() {
+
+        let path = Path::new(&name);
+        if path.is_relative() {
             // Take the parent of the current file, and build a new path.
-            if let Some(filename) = self.filename() {
-                if let Some(parent) = filename.parent() {
-                    let newname = name.clone();
-                    name = parent.to_path_buf();
-                    name.push(&newname);
-                }
+            if let Some(parent) = Path::new(curfile).parent() {
+                let mut pathbuf = parent.to_path_buf();
+                pathbuf.push(&path);
+                name = pathbuf.to_string_lossy().to_string();
             }
         }
-        let data =
-            fs::read(&name).map_err(|e| io::Error::new(e.kind(), format!("{:?}: {}", name, e)))?;
-        let text = String::from_utf8(data)
-            .map_err(|_| io::Error::new(ErrorKind::Other, format!("{:?}: utf-8 error", name)))?;
-        let tokenizer = Tokenizer::from_string(text, self.mode);
-        self.tokenizers.push(tokenizer);
-        self.filenames.push(name);
+
+        // It might be a glob.
+        let globresult = glob::glob(&name).map_err(|e| {
+            io::Error::new(ErrorKind::InvalidData, format!("{}: {}", name, e.msg))
+        })?;
+        let files = globresult.collect::<Result<Vec<_>, _>>().map_err(|e| {
+            io::Error::new(e.error().kind(), format!("{}: {}", e.path().to_string_lossy(), e.error()))
+        })?;
+        if files.is_empty() {
+            return Err(io::Error::new(ErrorKind::NotFound, format!("{}: file not found", name)));
+        }
+
+        // Now parse and insert these files one by one.
+        for file in files.into_iter().rev().map(|p| p.to_string_lossy().to_string()) {
+            let tokenizer = Tokenizer::from_file(file, self.mode)?;
+            self.tokenizer.insert(tokenizer);
+        }
+
         Ok(())
     }
 
-    pub(crate) fn tokenizer(&mut self) -> &mut Tokenizer {
-        let top = self.tokenizers.len() - 1;
-        &mut self.tokenizers[top]
-    }
-
-    pub(crate) fn filename(&self) -> Option<&Path> {
-        let n = self.filenames.len();
-        if n > 0 {
-            Some(&self.filenames[n - 1])
-        } else  {
-            None
-        }
-    }
-
-    pub(crate) fn include_end(&mut self) {
-        self.tokenizers.pop();
-        self.filenames.pop();
+    pub fn last_span(&mut self) -> TokenSpan {
+        self.tokenizer.last_span()
     }
 
     // Read the next token, and translate unexpected tokens to errors.
     fn do_token(&mut self, eof_ok: bool) -> Result<Token> {
 
-        let mut token = self.tokenizer().next_token();
-        if token.ttype == TokenType::Eof && self.tokenizers.len() > 1 {
-            token.ttype = TokenType::Eoi;
-        }
-
+        let token = self.tokenizer.next_token();
         match token.ttype {
             TokenType::Eof => {
                 if eof_ok {
                     return Ok(token.clone());
                 }
-                return Err(Error::new("unexpected end-of-file", token.pos));
+                return Err(Error::new("unexpected end-of-file", token.span()));
             }
             TokenType::UnterminatedString => {
-                return Err(Error::new("unterminated string literal", token.pos));
+                return Err(Error::new("unterminated string literal", token.span()));
             }
             TokenType::Unknown => {
-                return Err(Error::new("unexpected token", token.pos));
+                return Err(Error::new("unexpected token", token.span()));
             }
             _ => {}
         }
@@ -149,7 +138,7 @@ impl Parser {
         }
 
         debug!("+-- failed, got {:?}", token);
-        Err(Error::new(format!("expected {}", want.as_str()), token.pos))
+        Err(Error::new(format!("expected {}", want.as_str()), token.span()))
     }
 
     // Peek at the next token. Returns Ok(None) on EOF instead of an error.
@@ -187,26 +176,26 @@ impl Parser {
     }
 
     pub fn lookaheadnl(&mut self, how_far: usize) -> Lookahead {
-        if self.tokenizer().mode == Mode::Semicolon {
+        if self.tokenizer.mode == Mode::Semicolon {
             Lookahead::new(self, how_far)
         } else {
             Lookahead::newnl(self, how_far)
         }
     }
 
-    pub fn save_pos(&mut self) -> TokenPos {
-        self.tokenizer().save_pos()
+    pub fn save_pos(&mut self) -> Cursor {
+        self.tokenizer.save_cursor()
     }
 
-    pub fn restore_pos(&mut self, pos: TokenPos) {
-        self.tokenizer().restore_pos(pos);
+    pub fn restore_pos(&mut self, pos: Cursor) {
+        self.tokenizer.restore_cursor(pos);
     }
 }
 
 pub struct Lookahead {
     token: Vec<Result<Token>>,
-    this_pos: TokenPos,
-    next_pos: Vec<TokenPos>,
+    span: Option<TokenSpan>,
+    next_pos: Vec<Cursor>,
     expected: Vec<Cow<'static, str>>,
     found: bool,
 }
@@ -214,13 +203,18 @@ pub struct Lookahead {
 impl Lookahead {
     fn do_new(parser: &mut Parser, depth: usize, skipnl: bool) -> Lookahead {
         let pos = parser.save_pos();
-        let this_pos = pos;
         let mut token = Vec::new();
+        let mut span = None;
         let mut next_pos = Vec::new();
         for _ in 0..depth {
             let t = loop {
                 match parser.do_token(true) {
-                    Ok(token) if token.ttype != TokenType::Nl || !skipnl => break Ok(token),
+                    Ok(token) if token.ttype != TokenType::Nl || !skipnl => {
+                        if span.is_none() {
+                            span = Some(token.span());
+                        }
+                        break Ok(token);
+                    },
                     Err(e) => break Err(e),
                     _ => {}
                 }
@@ -232,7 +226,7 @@ impl Lookahead {
 
         Lookahead {
             token,
-            this_pos,
+            span,
             next_pos,
             expected: Vec::new(),
             found: false,
@@ -358,7 +352,7 @@ impl Lookahead {
         if let Some(last) = last {
             msg += &format!(" or {}", last);
         }
-        Err(Error::new(msg, self.this_pos))
+        Err(Error::new(msg, self.span.take().unwrap()))
     }
 
     pub fn error<T>(&mut self) -> Result<T> {
@@ -374,7 +368,7 @@ pub(crate) fn is_ident(token: &mut Token) -> bool {
     if token.ttype != TokenType::Word && token.ttype != TokenType::Ident {
         return false;
     }
-    if RE_IDENT.is_match(&token.value) {
+    if RE_IDENT.is_match(token.value()) {
         token.ttype = TokenType::Ident;
         true
     } else {

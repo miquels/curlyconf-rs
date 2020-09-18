@@ -1,3 +1,8 @@
+use std::fmt;
+use std::fs;
+use std::io::{self, ErrorKind};
+use std::sync::Arc;
+
 type Range = std::ops::Range<usize>;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -17,7 +22,6 @@ pub enum TokenType {
     Ident,
     Expr,
     Eof,
-    Eoi,
 }
 use TokenType::*;
 
@@ -32,6 +36,9 @@ pub enum Mode {
     #[doc(hidden)]
     Diablo,
 }
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct Cursor(usize);
 
 impl TokenType {
     pub fn as_str(&self) -> &'static str {
@@ -51,74 +58,117 @@ impl TokenType {
             Ident => "identifier", // alias for Word
             Expr => "expression",  // alias for Word
             Eof => "end-of-data",
-            Eoi => "end-of-include",
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct TokenPos {
+pub struct TokenSource {
+    pub filename:   String,
+    text:       String,
+}
+
+impl fmt::Debug for TokenSource {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_struct("TokenSource")
+            .field("filename", &self.filename)
+            .field("text", &"[]")
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+pub struct TokenSpan {
     pub line: u32,
     pub column: u32,
-    pub offset: usize,
+    pub range: Range,
+    pub source: Arc<TokenSource>,
 }
 
-impl TokenPos {
-    pub(crate) fn new() -> TokenPos {
-        TokenPos {
-            line: 1,
-            column: 1,
-            offset: 0,
-        }
+impl fmt::Debug for TokenSpan {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        let s = &self.source.text[self.range.clone()];
+        fmt.debug_struct("TokenSpan")
+            .field("file", &self.source.filename)
+            .field("line", &self.line)
+            .field("column", &self.column)
+            .field("str", &s)
+            .finish()
     }
+}
 
-    pub(crate) fn none() -> TokenPos {
-        TokenPos {
-            line: 0,
-            column: 0,
-            offset: 0,
-        }
-    }
+#[derive(Debug, Default, Clone, Copy)]
+struct Position {
+    line:   u32,
+    column: u32,
+    offset: usize,
 }
 
 #[derive(Debug)]
 pub struct Tokenizer {
-    file: String,
-    data: String,
-    pub(crate) pos: TokenPos,
-    pub(crate) mode: Mode,
+    tokens: Vec<Token>,
+    source: Arc<TokenSource>,
+    pos: Position,
+    cursor: usize,
+    pub mode: Mode,
 }
 
 #[derive(Debug, Clone)]
 pub struct Token {
     pub ttype: TokenType,
-    pub pos: TokenPos,
-    pub value: String,
+    pub span: TokenSpan,
+    pub value: Option<String>,
 }
 
 impl Token {
-    pub fn new(ttype: TokenType, value: impl Into<String>, pos: TokenPos) -> Token {
-        let value = value.into();
-        Token { ttype, value, pos }
+    pub fn value(&self) -> &str {
+        if let Some(value) = self.value.as_ref() {
+            value.as_str()
+        } else {
+            &self.span.source.text[self.span.range.clone()]
+        }
+    }
+    pub fn span(&self) -> TokenSpan {
+        self.span.clone()
     }
 }
 
 impl Tokenizer {
-    pub fn from_string(s: impl Into<String>, mode: Mode) -> Tokenizer {
-        Tokenizer {
-            file: "cfg-data".to_string(),
-            data: s.into(),
-            pos: TokenPos::new(),
+    pub fn from_file(filename: impl Into<String>, mode: Mode) -> io::Result<Tokenizer> {
+        let filename = filename.into();
+        let data =
+            fs::read(&filename).map_err(|e| io::Error::new(e.kind(), format!("{:?}: {}", filename, e)))?;
+        let text = String::from_utf8(data)
+            .map_err(|_| io::Error::new(ErrorKind::Other, format!("{:?}: utf-8 error", filename)))?;
+        Ok(Tokenizer::from_string(text, filename, mode))
+    }
+
+    pub fn from_string(text: impl Into<String>, filename: impl Into<String>, mode: Mode) -> Tokenizer {
+        let filename = filename.into();
+        let text = text.into();
+        let mut t = Tokenizer {
+            tokens: Vec::new(),
+            source: Arc::new(TokenSource{ filename, text }),
             mode,
+            cursor: 0,
+            pos: Position { line: 1, column: 1, offset: 0 },
+        };
+        let mut end = false;
+        while !end {
+            let token = t.get_token();
+            if token.ttype == TokenType::Eof {
+                end = true;
+            }
+            t.tokens.push(token);
         }
+        t
     }
 
     pub fn update_pos(&mut self, n: usize) {
-        let s = &self.data[self.pos.offset..self.pos.offset + n];
+        let s = &self.source.text[self.pos.offset..self.pos.offset + n];
         for c in s.chars() {
             self.pos.offset += c.len_utf8();
             if c == '\n' {
-                if self.pos.offset < self.data.len() {
+                if self.pos.offset < self.source.text.len() {
                     self.pos.line += 1;
                     self.pos.column = 1;
                 }
@@ -132,7 +182,7 @@ impl Tokenizer {
     pub fn skip_space(&self, skip_nl: bool) -> usize {
         let mut n = 0;
         let mut comment = false;
-        let mut s = self.data[self.pos.offset..].chars();
+        let mut s = self.source.text[self.pos.offset..].chars();
         while let Some(c) = s.next() {
             if comment {
                 if c == '\n' {
@@ -155,34 +205,30 @@ impl Tokenizer {
         n
     }
 
-    fn parse_sqstring(&mut self) -> (TokenType, Range) {
+    pub fn last_span(&self) -> TokenSpan {
+        let c = if self.cursor > 0 { self.cursor - 1 } else { 0 };
+        self.tokens[c].span()
+    }
+
+    fn parse_sqstring(&mut self) -> Token {
         let offset = self.pos.offset;
-        let s = &self.data[offset + 1..];
+        let s = &self.source.text[offset + 1..];
         if let Some(x) = s.find('\'') {
+            let pos = self.pos;
+            let value = s[..x].to_string();
             self.update_pos(x + 2);
-            (
-                TokenType::Word,
-                Range {
-                    start: offset + 1,
-                    end: offset + 1 + x,
-                },
-            )
+            self.build_token(TokenType::Word, pos, x + 2, Some(value))
         } else {
-            let x = s.len() + 1;
-            self.update_pos(x);
-            (
-                TokenType::UnterminatedString,
-                Range {
-                    start: offset + 1,
-                    end: offset + x,
-                },
-            )
+            let len = self.source.text.len() - offset;
+            let pos = self.pos;
+            self.update_pos(len);
+            self.build_token(TokenType::UnterminatedString, pos, len, None)
         }
     }
 
-    fn parse_dqstring(&mut self) -> (TokenType, Range) {
+    fn parse_dqstring(&mut self) -> Token {
         let offset = self.pos.offset;
-        let s = &self.data[offset + 1..];
+        let s = &self.source.text[offset + 1..];
         let mut esc = false;
         let mut n = 0;
         let mut end = false;
@@ -197,39 +243,31 @@ impl Tokenizer {
                 continue;
             }
             if c == '"' {
+                n -= 1;
                 end = true;
                 break;
             }
         }
 
         if end {
-            self.update_pos(n + 1);
-            (
-                TokenType::Word,
-                Range {
-                    start: offset + 1,
-                    end: offset + n,
-                },
-            )
+            let pos = self.pos;
+            let value = expand_string(&s[..n]).unwrap_or(String::from(&s[..n]));
+            self.update_pos(n + 2);
+            self.build_token(TokenType::Word, pos, n + 2, Some(value))
         } else {
-            let x = s.len() + 1;
-            self.update_pos(x);
-            (
-                TokenType::UnterminatedString,
-                Range {
-                    start: offset + 1,
-                    end: offset + x,
-                },
-            )
+            let len = s.len() + 1;
+            let pos = self.pos;
+            self.update_pos(len);
+            self.build_token(TokenType::UnterminatedString, pos, len, None)
         }
     }
 
-    pub fn parse_word(&mut self) -> (TokenType, Range) {
+    pub fn parse_word(&mut self) -> Token {
         // Words.
         let mut n = 0;
         let mut i = 0;
         let offset = self.pos.offset;
-        let s = &self.data[offset..];
+        let s = &self.source.text[offset..];
         for c in s.chars() {
             match c {
                 '@' | '$' | '%' | '^' | '&' | '*' | '-' | '_' | '+' | '[' | ']' | ':' | '|'
@@ -243,61 +281,55 @@ impl Tokenizer {
             n += c.len_utf8();
         }
 
+        let pos = self.pos;
+
         if i == 0 {
             self.update_pos(1);
-            return (
-                TokenType::Unknown,
-                Range {
-                    start: offset,
-                    end: offset + 1,
-                },
-            );
+            return self.build_token(TokenType::Unknown, pos, 1, None);
         }
 
         self.update_pos(n);
-        let range = Range {
-            start: offset,
-            end: offset + n,
-        };
+        let mut ttype = TokenType::Word;
 
         // Yes, this is kind of ugly.
-        if self.mode == Mode::Diablo && &self.data[range.clone()] == "end" {
-            return (TokenType::End, range);
+        if self.mode == Mode::Diablo && &self.source.text[offset .. offset + n] == "end" {
+            ttype = TokenType::End;
         }
 
-        (TokenType::Word, range)
+        self.build_token(ttype, pos, n, None)
     }
 
-    pub fn parse_token(&mut self, t: TokenType) -> (TokenType, Range) {
-        let offset = self.pos.offset;
+    pub fn parse_token(&mut self, t: TokenType) -> Token {
+        let pos = self.pos;
         self.update_pos(1);
-        (
-            t,
-            Range {
-                start: offset,
-                end: offset + 1,
-            },
-        )
+        self.build_token(t, pos, 1, None)
     }
 
-    pub fn next_token(&mut self) -> Token {
+    fn build_token(&self, ttype: TokenType, pos: Position, len: usize, value: Option<String>) -> Token {
+        Token {
+            ttype,
+            value,
+            span: TokenSpan{
+                line: pos.line,
+                column: pos.column,
+                range: Range{ start: pos.offset, end: pos.offset + len },
+                source: self.source.clone(),
+            },
+        }
+    }
+
+    fn get_token(&mut self) -> Token {
         let n = self.skip_space(self.mode == Mode::Semicolon);
         self.update_pos(n);
-        if self.pos.offset == self.data.len() {
-            return Token {
-                ttype: TokenType::Eof,
-                pos: self.pos,
-                value: "".to_string(),
-            };
+        if self.pos.offset == self.source.text.len() {
+            return self.build_token(TokenType::Eof, self.pos, 0, None);
         }
 
-        let s = &self.data[self.pos.offset..];
-        let pos = self.pos;
-        let mut dq = false;
+        let s = &self.source.text[self.pos.offset..];
 
         // We can figure out tokentype based on the first char.
-        let mut chars = s.chars();
-        let (t, range) = match chars.next().unwrap() {
+        let first = s.chars().next().unwrap();
+        let token = match first {
             '\n' => self.parse_token(TokenType::Nl),
             '{' => self.parse_token(TokenType::LcBrace),
             '}' => self.parse_token(TokenType::RcBrace),
@@ -306,39 +338,50 @@ impl Tokenizer {
             ',' => self.parse_token(TokenType::Comma),
             ';' => self.parse_token(TokenType::Semi),
             '=' => self.parse_token(TokenType::Equal),
-            '"' => {
-                dq = true;
-                self.parse_dqstring()
-            }
+            '"' => self.parse_dqstring(),
             '\'' => self.parse_sqstring(),
             _ => self.parse_word(),
         };
 
         // if we got a Newline token, skip all following newlines.
-        if t == TokenType::Nl {
+        if token.ttype == TokenType::Nl {
             let n = self.skip_space(true);
             self.update_pos(n);
         }
 
-        Token {
-            ttype: t,
-            pos,
-            value: expand_string(dq, &self.data[range]),
+        token
+    }
+
+    pub fn next_token(&mut self) -> Token {
+        let token = self.tokens[self.cursor].clone();
+        if token.ttype != TokenType::Eof {
+            self.cursor += 1;
         }
+        token
     }
 
-    pub fn save_pos(&self) -> TokenPos {
-        self.pos
+    pub fn save_cursor(&self) -> Cursor {
+        Cursor(self.cursor)
     }
 
-    pub fn restore_pos(&mut self, pos: TokenPos) {
-        self.pos = pos;
+    pub fn restore_cursor(&mut self, cursor: Cursor) {
+        self.cursor = cursor.0;
+    }
+
+    pub fn insert(&mut self, other: Tokenizer) {
+        let mut tokens = other.tokens;
+        if !tokens.is_empty() && tokens[tokens.len()-1].ttype == TokenType::Eof {
+            tokens.pop();
+        }
+        let tail = self.tokens.split_off(self.cursor);
+        self.tokens.extend(tokens);
+        self.tokens.extend(tail);
     }
 }
 
-fn expand_string(dq: bool, s: &str) -> String {
-    if !dq || !s.contains("\\") {
-        return s.to_string();
+fn expand_string(s: &str) -> Option<String> {
+    if !s.contains("\\") {
+        return None;
     }
     let mut r = String::with_capacity(s.len());
     let mut escaped = false;
@@ -367,7 +410,7 @@ fn expand_string(dq: bool, s: &str) -> String {
         escaped = false;
         r.push(x);
     }
-    r
+    Some(r)
 }
 
 /*
