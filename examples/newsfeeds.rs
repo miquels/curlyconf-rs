@@ -33,7 +33,7 @@ fn main() -> Result<()> {
         .alias::<NewsPeer>("addist", "distributions")
         .alias::<NewsPeer>("deldist", "distributions")
         .ignore::<NewsPeer>("realtime")
-        .from_file("examples/newspeers.cfg")
+        .from_file("examples/newsfeeds.cfg")
     {
         Ok(cfg @ Config { .. }) => cfg,
         Err(e) => {
