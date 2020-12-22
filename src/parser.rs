@@ -1,10 +1,10 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -377,7 +377,7 @@ fn is_expr(token: &mut Token) -> bool {
 
 struct ExpandedPath {
     name:   String,
-    paths:  HashMap<String, SystemTime>,
+    paths:  BTreeMap<String, SystemTime>,
 }
 
 impl ExpandedPath {
@@ -396,8 +396,8 @@ impl ExpandedPath {
         }
 
         // Now parse and insert these files one by one.
-        let mut paths = HashMap::new();
-        for file in files.into_iter().rev().map(|p| p.to_string_lossy().to_string()) {
+        let mut paths = BTreeMap::new();
+        for file in files.into_iter().map(|p| p.to_string_lossy().to_string()) {
             let modified = fs::metadata(&file).and_then(|m| m.modified()).map_err(|e| {
                 io::Error::new(e.kind(), format!("{}: {}", file, e))
             })?;
@@ -423,38 +423,25 @@ impl ExpandedPath {
     }
 
     fn changed(&self) -> bool {
-        let now = SystemTime::now();
-
         // expand the same name again.
         let mut new = match ExpandedPath::expand(&self.name) {
             Ok(p) => p,
             Err(_) => return true,
         };
 
-        // Optimization: since these files might be part of a larger set, don't check if there
-        // are very recent changes (other files in the set might get updated right now).
-        // Re-reading is still not race-free, but it helps a bit.
-        for (_, &time) in &self.paths {
-            if let Ok(d) = now.duration_since(time) {
-                if d < Duration::from_secs(1) {
-                    return false;
-                }
-            }
-        }
-
         // compare old and new.
         for (path, time) in &self.paths {
             match new.paths.get(path) {
                 Some(ntime) => {
                     if time != ntime {
-                        return false;
+                        return true;
                     }
                     new.paths.remove(path);
                 },
-                None => return false,
+                None => return true,
             }
         }
-        new.paths.is_empty()
+        new.paths.len() > 0
     }
 }
 

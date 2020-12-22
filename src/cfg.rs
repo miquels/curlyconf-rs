@@ -84,7 +84,7 @@ impl Builder {
     }
 
     /// Insert a Watcher.
-    pub fn watcher<T>(mut self, watcher: &Watcher) -> Builder {
+    pub fn watcher(mut self, watcher: &Watcher) -> Builder {
         self.watcher = Some(watcher.clone());
         self
     }
