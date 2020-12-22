@@ -9,7 +9,7 @@ use serde::de::{
 };
 
 use crate::error::{Error, Result};
-use crate::parser::Parser;
+use crate::parser::{Parser, Watcher};
 use crate::tokenizer::Mode;
 use crate::tokenizer::{Token, TokenSpan, TokenType};
 
@@ -115,8 +115,9 @@ impl Deserializer {
         mode: Mode,
         aliases: HashMap<String, String>,
         ignored: HashSet<String>,
+        watcher: Option<Watcher>,
     ) -> Self {
-        let parser = Parser::from_string(s, mode);
+        let parser = Parser::from_string(s, mode, watcher);
         Self::new(parser, mode, aliases, ignored)
     }
 
@@ -125,8 +126,9 @@ impl Deserializer {
         mode: Mode,
         aliases: HashMap<String, String>,
         ignored: HashSet<String>,
+        watcher: Option<Watcher>,
     ) -> io::Result<Self> {
-        let parser = Parser::from_file(file, mode)?;
+        let parser = Parser::from_file(file, mode, watcher)?;
         Ok(Self::new(parser, mode, aliases, ignored))
     }
 }
@@ -766,7 +768,7 @@ impl<'de, 'a> MapAccess<'de> for SectionAccess<'a> {
 
         // if the struct has a __label__ field, insert label value (once!)
         if let Some(label) = self.label.take() {
-            let mut de = Deserializer::from_str(label, Mode::Newline, HashMap::new(), HashSet::new());
+            let mut de = Deserializer::from_str(label, Mode::Newline, HashMap::new(), HashSet::new(), self.de.parser.watcher.clone());
             return seed.deserialize(&mut de);
         }
 

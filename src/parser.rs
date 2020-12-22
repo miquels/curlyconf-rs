@@ -1,6 +1,10 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
+use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -11,47 +15,35 @@ use crate::tokenizer::*;
 pub struct Parser {
     tokenizer: Tokenizer,
     mode: Mode,
+    pub watcher:    Option<Watcher>,
 }
 
 impl Parser {
-    pub fn from_file(name: impl Into<String>, mode: Mode) -> io::Result<Parser> {
+    pub fn from_file(name: impl Into<String>, mode: Mode, mut watcher: Option<Watcher>) -> io::Result<Parser> {
+        let name = name.into();
+        if let Some(watcher) = watcher.as_mut() {
+            watcher.add_config_path(&name)?;
+        }
         let tokenizer = Tokenizer::from_file(name, mode)?;
-        Ok(Parser { tokenizer, mode })
+        Ok(Parser { tokenizer, mode, watcher })
     }
 
-    pub fn from_string(name: impl Into<String>, mode: Mode) -> Parser {
+    pub fn from_string(name: impl Into<String>, mode: Mode, watcher: Option<Watcher>) -> Parser {
         let tokenizer = Tokenizer::from_string(name, "config-text", mode);
-        Parser { tokenizer, mode }
+        Parser { tokenizer, mode, watcher }
     }
 
     pub fn include(&mut self, name: impl Into<String>, curfile: &str) -> io::Result<()> {
-        let mut name = name.into();
-
-        let path = Path::new(&name);
-        if path.is_relative() {
-            // Take the parent of the current file, and build a new path.
-            if let Some(parent) = Path::new(curfile).parent() {
-                let mut pathbuf = parent.to_path_buf();
-                pathbuf.push(&path);
-                name = pathbuf.to_string_lossy().to_string();
-            }
-        }
-
-        // It might be a glob.
-        let globresult = glob::glob(&name).map_err(|e| {
-            io::Error::new(ErrorKind::InvalidData, format!("{}: {}", name, e.msg))
-        })?;
-        let files = globresult.collect::<Result<Vec<_>, _>>().map_err(|e| {
-            io::Error::new(e.error().kind(), format!("{}: {}", e.path().to_string_lossy(), e.error()))
-        })?;
-        if files.is_empty() {
-            return Err(io::Error::new(ErrorKind::NotFound, format!("{}: file not found", name)));
-        }
+        // Run a glob on the filename.
+        let paths = ExpandedPath::expand_relative(name, curfile)?;
 
         // Now parse and insert these files one by one.
-        for file in files.into_iter().rev().map(|p| p.to_string_lossy().to_string()) {
-            let tokenizer = Tokenizer::from_file(file, self.mode)?;
+        for file in &paths {
+            let tokenizer = Tokenizer::from_file(file.to_string(), self.mode)?;
             self.tokenizer.insert(tokenizer);
+        }
+        if let Some(watcher) = self.watcher.as_mut() {
+            watcher.add_included_paths(paths);
         }
 
         Ok(())
@@ -382,3 +374,136 @@ fn is_expr(token: &mut Token) -> bool {
     }
     token.ttype == TokenType::Expr
 }
+
+struct ExpandedPath {
+    name:   String,
+    paths:  HashMap<String, SystemTime>,
+}
+
+impl ExpandedPath {
+    fn expand(name: impl Into<String>) -> io::Result<ExpandedPath> {
+        let name = name.into();
+
+        // Try to expand.
+        let globresult = glob::glob(&name).map_err(|e| {
+            io::Error::new(ErrorKind::InvalidData, format!("{}: {}", name, e.msg))
+        })?;
+        let files = globresult.collect::<Result<Vec<_>, _>>().map_err(|e| {
+            io::Error::new(e.error().kind(), format!("{}: {}", e.path().to_string_lossy(), e.error()))
+        })?;
+        if files.is_empty() {
+            return Err(io::Error::new(ErrorKind::NotFound, format!("{}: file not found", name)));
+        }
+
+        // Now parse and insert these files one by one.
+        let mut paths = HashMap::new();
+        for file in files.into_iter().rev().map(|p| p.to_string_lossy().to_string()) {
+            let modified = fs::metadata(&file).and_then(|m| m.modified()).map_err(|e| {
+                io::Error::new(e.kind(), format!("{}: {}", file, e))
+            })?;
+            paths.insert(file, modified);
+        }
+
+        Ok(ExpandedPath { name, paths })
+    }
+
+    fn expand_relative(name: impl Into<String>, relative_to: impl AsRef<str>) -> io::Result<ExpandedPath> {
+        let mut name = name.into();
+        let relative_to = relative_to.as_ref();
+        let path = Path::new(&name);
+        if path.is_relative() {
+            // Take the parent of the current file, and build a new path.
+            if let Some(parent) = Path::new(relative_to).parent() {
+                let mut pathbuf = parent.to_path_buf();
+                pathbuf.push(&path);
+                name = pathbuf.to_string_lossy().to_string();
+            }
+        }
+        ExpandedPath::expand(name)
+    }
+
+    fn changed(&self) -> bool {
+        let now = SystemTime::now();
+
+        // expand the same name again.
+        let mut new = match ExpandedPath::expand(&self.name) {
+            Ok(p) => p,
+            Err(_) => return true,
+        };
+
+        // Optimization: since these files might be part of a larger set, don't check if there
+        // are very recent changes (other files in the set might get updated right now).
+        // Re-reading is still not race-free, but it helps a bit.
+        for (_, &time) in &self.paths {
+            if let Ok(d) = now.duration_since(time) {
+                if d < Duration::from_secs(1) {
+                    return false;
+                }
+            }
+        }
+
+        // compare old and new.
+        for (path, time) in &self.paths {
+            match new.paths.get(path) {
+                Some(ntime) => {
+                    if time != ntime {
+                        return false;
+                    }
+                    new.paths.remove(path);
+                },
+                None => return false,
+            }
+        }
+        new.paths.is_empty()
+    }
+}
+
+impl<'a> IntoIterator for &'a ExpandedPath {
+    type Item = &'a str;
+    type IntoIter = Box<dyn Iterator<Item=&'a str> + 'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Box::new(self.paths.keys().map(|p| p.as_str()))
+    }
+}
+
+/// Check if the configuration has changed on disk.
+///
+/// A `Watcher` contains the list of files that were parsed to build
+/// the configuration. It can be used to watch those files for changes.
+#[derive(Clone)]
+pub struct Watcher {
+    inner:  Arc<Mutex<WatcherInner>>,
+}
+
+struct WatcherInner {
+    epaths:      Vec<ExpandedPath>,
+}
+
+impl Watcher {
+    /// Create a new watcher.
+    pub fn new() -> Watcher {
+        let inner = WatcherInner {
+            epaths: Vec::new(),
+        };
+        Watcher{ inner: Arc::new(Mutex::new(inner)) }
+    }
+
+    fn add_config_path(&self, file: &str) -> io::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.epaths.push(ExpandedPath::expand(file)?);
+        Ok(())
+    }
+
+    fn add_included_paths(&self, paths: ExpandedPath) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.epaths.push(paths);
+    }
+
+    /// Check if any configuration files have changed.
+    pub fn changed(&self) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner.epaths.iter().any(|p| p.changed())
+    }
+}
+

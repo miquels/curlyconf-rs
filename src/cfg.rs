@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use crate::de::{Deserializer, SECTION_CTX};
 use crate::error::Result;
+use crate::parser::Watcher;
 use crate::tokenizer::Mode;
 
 /// Read configuration from a string.
@@ -39,6 +40,7 @@ pub struct Builder {
     mode: Mode,
     aliases: HashMap<String, String>,
     ignored: HashSet<String>,
+    watcher: Option<Watcher>,
 }
 
 impl Builder {
@@ -48,6 +50,7 @@ impl Builder {
             mode: Mode::Semicolon,
             aliases: HashMap::new(),
             ignored: HashSet::new(),
+            watcher: None,
         }
     }
 
@@ -80,13 +83,19 @@ impl Builder {
         self
     }
 
+    /// Insert a Watcher.
+    pub fn watcher<T>(mut self, watcher: &Watcher) -> Builder {
+        self.watcher = Some(watcher.clone());
+        self
+    }
+
     /// This concludes the building phase and reads the configuration from a string.
     pub fn from_str<T>(self, text: &str) -> Result<T>
     where
         T: for<'de> Deserialize<'de>,
     {
         let mut deserializer =
-            Deserializer::from_str(text, self.mode, self.aliases, self.ignored);
+            Deserializer::from_str(text, self.mode, self.aliases, self.ignored, self.watcher);
         T::deserialize(&mut deserializer)
     }
 
@@ -96,7 +105,7 @@ impl Builder {
         T: for<'de> Deserialize<'de>,
     {
         let mut deserializer =
-            Deserializer::from_file(name, self.mode, self.aliases, self.ignored)?;
+            Deserializer::from_file(name, self.mode, self.aliases, self.ignored, self.watcher)?;
         T::deserialize(&mut deserializer)
             .map_err(|e| IoError::new(Kind::Other, e))
     }
