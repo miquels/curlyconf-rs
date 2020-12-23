@@ -1,4 +1,4 @@
-#![doc(html_root_url = "https://docs.rs/curlyconf/0.1.0-alpha.5")]
+#![doc(html_root_url = "https://docs.rs/curlyconf/0.1.0-alpha.6")]
 //! ## Curlyconf
 //!
 //! Curlyconf is a configuration file reader for the configuration
