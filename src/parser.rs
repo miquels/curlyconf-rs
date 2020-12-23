@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs;
+use std::fmt;
 use std::io::{self, ErrorKind};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -22,7 +23,7 @@ impl Parser {
     pub fn from_file(name: impl Into<String>, mode: Mode, mut watcher: Option<Watcher>) -> io::Result<Parser> {
         let name = name.into();
         if let Some(watcher) = watcher.as_mut() {
-            watcher.add_config_path(&name)?;
+            watcher.add_file(&name)?;
         }
         let tokenizer = Tokenizer::from_file(name, mode)?;
         Ok(Parser { tokenizer, mode, watcher })
@@ -458,9 +459,26 @@ impl<'a> IntoIterator for &'a ExpandedPath {
 ///
 /// A `Watcher` contains the list of files that were parsed to build
 /// the configuration. It can be used to watch those files for changes.
+/// A watcher is initialized by using a [`crate::Builder`] and
+/// passing it to its [watcher][`crate::Builder::watcher`] method.
 #[derive(Clone)]
 pub struct Watcher {
     inner:  Arc<Mutex<WatcherInner>>,
+}
+
+impl fmt::Debug for Watcher {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[private]")
+    }
+}
+
+impl Default for Watcher {
+    fn default() -> Watcher {
+        let inner = WatcherInner {
+            epaths: Vec::new(),
+        };
+        Watcher{ inner: Arc::new(Mutex::new(inner)) }
+    }
 }
 
 struct WatcherInner {
@@ -470,13 +488,11 @@ struct WatcherInner {
 impl Watcher {
     /// Create a new watcher.
     pub fn new() -> Watcher {
-        let inner = WatcherInner {
-            epaths: Vec::new(),
-        };
-        Watcher{ inner: Arc::new(Mutex::new(inner)) }
+        Watcher::default()
     }
 
-    fn add_config_path(&self, file: &str) -> io::Result<()> {
+    /// Add an extra file to be watched for changes.
+    pub fn add_file(&self, file: &str) -> io::Result<()> {
         let mut inner = self.inner.lock().unwrap();
         inner.epaths.push(ExpandedPath::expand(file)?);
         Ok(())
