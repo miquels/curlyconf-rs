@@ -11,10 +11,8 @@ use crate::tokenizer::Mode;
 
 /// Read configuration from a string.
 ///
-/// This uses the defaults (e.g. `Mode::Semicolon`). If you want to
+/// This uses the defaults (e.g. [`Mode::Semicolon`]). If you want to
 /// configure the configuration parser, use a [`Builder`] struct.
-///
-/// [`Builder`]: struct.Builder.html
 pub fn from_str<T>(s: &str) -> Result<T>
 where
     T: for<'de> Deserialize<'de>,
@@ -24,10 +22,8 @@ where
 
 /// Read configuration from a file.
 ///
-/// This uses the defaults (e.g. `Mode::Semicolon`). If you want to
+/// This uses the defaults (e.g. [`Mode::Semicolon`]). If you want to
 /// configure the configuration parser, use a [`Builder`] struct.
-///
-/// [`Builder`]: struct.Builder.html
 pub fn from_file<T>(name: impl Into<String>) -> io::Result<T>
 where
     T: for<'de> Deserialize<'de>,
@@ -55,8 +51,8 @@ impl Builder {
     }
 
     /// Set the mode of this configuration file parser:
-    /// - `Mode::Semicolon`: values must end in `;`.
-    /// - `Mode::Newline`: values end with a newline.
+    /// - [`Mode::Semicolon`]: values must end in `;`.
+    /// - [`Mode::Newline`]: values end with a newline.
     pub fn mode(mut self, mode: Mode) -> Builder {
         self.mode = mode;
         self
@@ -75,7 +71,7 @@ impl Builder {
         self
     }
 
-    /// Ignore a value.
+    /// Ignore a value (by name).
     pub fn ignore<T>(mut self, key: &str) -> Builder {
         let type_name = std::any::type_name::<T>().split(":").last().unwrap();
         let type_dot_alias = format!("{}.{}", type_name, key);
@@ -83,7 +79,7 @@ impl Builder {
         self
     }
 
-    /// Insert a Watcher.
+    /// Insert a [`Watcher`]
     pub fn watcher(mut self, watcher: &Watcher) -> Builder {
         self.watcher = Some(watcher.clone());
         self
@@ -118,7 +114,7 @@ pub trait ParserAccess {
     /// Get the name of the value that's currently being parsed.
     ///
     /// Useful in `Deserialize` implementations. You can have one field
-    /// with several aliases (see `Builder::alias`) and differentiate
+    /// with several aliases (see [`Builder::alias`]) and differentiate
     /// the action in `Deserialize::deserialize` based on which alias it is.
     ///
     /// For example, a `groups: Vec<String>` value, with `addgroup` and
@@ -127,8 +123,8 @@ pub trait ParserAccess {
         SECTION_CTX.with(|ctx| ctx.borrow().subsection_name().to_string())
     }
 
-    /// Get a direct reference to the parser instead of via the Deserializer handle
-    /// so that it can be stored somewhere (usually in a visitor struct).
+    /// Get a direct static reference to the parser instead of via the Deserializer
+    /// handle so that it can be stored somewhere (usually in a visitor struct).
     fn parser(&self) -> Parser {
         Parser
     }
@@ -138,9 +134,9 @@ impl<'de, T> ParserAccess for T where T: de::Deserializer<'de> {}
 
 /// Reference to the parser for `Deserialize` impls.
 ///
-/// Implements [`ParserAccess`].
-///
-/// [`ParserAccess`]: trait.ParserAccess.html
+/// This struct, like `Deserialize` impls, implements the [`ParserAccess`]
+/// trait. It holds a global, static reference to the current parser.
+/// See [`ParserAccess::parser`].
 pub struct Parser;
 impl ParserAccess for Parser {}
 

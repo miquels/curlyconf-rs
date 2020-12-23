@@ -5,15 +5,18 @@ use crate::tokenizer::TokenSpan;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// Generic error returned by the configuration parser.
+/// Error returned by the configuration parser.
+///
+/// The [`std::fmt::Display`] implementation prints a diagnostic including filename,
+/// line number and column.
 #[derive(Clone, Debug)]
 pub struct Error {
-    pub span: Option<TokenSpan>,
-    pub msg: String,
+    pub(crate) span: Option<TokenSpan>,
+    pub(crate) msg: String,
 }
 
 impl Error {
-    pub fn new(msg: impl Into<String>, span: TokenSpan) -> Error {
+    pub(crate) fn new(msg: impl Into<String>, span: TokenSpan) -> Error {
         Error {
             span: Some(span),
             msg: msg.into(),
