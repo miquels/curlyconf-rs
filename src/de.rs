@@ -157,20 +157,35 @@ impl Deserializer {
     }
 
     // check for "include" statement.
+    // we allow multiple values seperated by commas.
     fn check_include(&mut self) -> Result<()> {
         // loop, since the included file might start with an include statement.
         loop {
             let mut lookahead = self.parser.lookahead(1);
             if let Some(ident) = lookahead.peek(TokenType::Ident)? {
                 if ident.value() == "include" {
-                    lookahead.advance(&mut self.parser);
                     let curfile = &ident.span().source.filename;
-                    let filename = self.parser.expect(TokenType::Expr)?;
-                    self.parser.expect(self.eov)?;
-                    self.parser.include(filename.value(), curfile).map_err(|e| {
-                        Error::new(e.to_string(), filename.span())
-                    })?;
-                    continue;
+                    lookahead.advance(&mut self.parser);
+                    let mut includes = Vec::new();
+                    loop {
+                        let filename = self.parser.expect(TokenType::Expr)?;
+                        includes.push(filename);
+                        let mut lookahead = self.parser.lookahead(1);
+                        if let Some(_) = lookahead.peek(TokenType::Comma)? {
+                            lookahead.advance(&mut self.parser);
+                            continue;
+                        }
+                        if let Some(_) = lookahead.peek(self.eov)? {
+                            lookahead.advance(&mut self.parser);
+                            break;
+                        }
+                        lookahead.error()?;
+                    }
+                    for filename in &includes {
+                        self.parser.include(filename.value(), curfile).map_err(|e| {
+                            Error::new(e.to_string(), filename.span())
+                        })?;
+                    }
                 }
             }
             break;
