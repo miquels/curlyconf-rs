@@ -159,13 +159,17 @@ macro_rules! debug {
     }
 }
 
-mod cfg;
-mod de;
+pub use curlyconf_impl::CurlyConf;
+
+// mod cfg;
+// mod de;
 mod error;
 mod parser;
 mod tokenizer;
+mod cc_trait;
 
-pub use cfg::{from_file, from_str, Builder, Parser, ParserAccess};
+// pub use cfg::{from_file, from_str, Builder, Parser, ParserAccess};
 pub use error::Error;
 pub use tokenizer::Mode;
+pub use cc_trait::{CurlyConf, Type};
 pub use parser::Watcher;

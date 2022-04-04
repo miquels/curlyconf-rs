@@ -1,4 +1,3 @@
-use serde::{de, ser};
 use std::fmt;
 
 use crate::tokenizer::TokenSpan;
@@ -21,18 +20,6 @@ impl Error {
             span: Some(span),
             msg: msg.into(),
         }
-    }
-}
-
-impl ser::Error for Error {
-    fn custom<T: fmt::Display>(msg: T) -> Self {
-        Error { msg: msg.to_string(), span: None }
-    }
-}
-
-impl de::Error for Error {
-    fn custom<T: fmt::Display>(msg: T) -> Self {
-        Error { msg: msg.to_string(), span: None }
     }
 }
 
